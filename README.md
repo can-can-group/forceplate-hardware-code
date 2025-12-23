@@ -1084,16 +1084,3 @@ Teensy 4.1          ADS1256 Breakout
 └─────────────┘     └──────────────┘
 ```
 
-## Testing Your Setup
-
-1. **Power Check**: Verify 3.3V on VDD and AVDD
-2. **SPI Communication**: The code will print register values during initialization
-3. **Data Ready**: Should see interrupt activity on DRDY pin
-4. **ADC Values**: Should get reasonable readings based on your input signals
-
-## Troubleshooting
-
-- **No communication**: Check SPI wiring and CS pin
-- **Noisy readings**: Check power supply decoupling and grounding
-- **No DRDY interrupts**: Verify Pin 22 connection and pull-up if needed
-- **Wrong values**: Check reference voltage connections and gain settings
