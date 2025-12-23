@@ -46,6 +46,11 @@ void update_led_status();
 #define LED_DI3 39
 #define LED_DI4 40
 
+// Number of LEDs per data line (if LEDs are chained in series)
+// Set to 1 if each pin controls a single LED
+// Set to N if you have N LEDs chained in series on each pin
+#define LEDS_PER_PIN 50  // Change this to match your actual LED count per pin
+
 // LED state
 enum LedStatus {
   LED_BOOTING = 0,
@@ -422,6 +427,26 @@ static inline void led_ws_show_1pixel(uint8_t pin, uint8_t r, uint8_t g, uint8_t
   delayMicroseconds(80); // latch
 }
 
+// Send data to multiple LEDs in series on one pin (for chained WS2812)
+static inline void led_ws_show_npixels(uint8_t pin, uint8_t r, uint8_t g, uint8_t b, uint8_t br, uint8_t num_leds) {
+  r = led_scale8(r, br);
+  g = led_scale8(g, br);
+  b = led_scale8(b, br);
+
+  noInterrupts();
+  // Send data for all LEDs in the chain (no latch delay between them)
+  for (uint8_t i = 0; i < num_leds; i++) {
+    // WS2812 order: GRB
+    led_ws_send_byte(pin, g);
+    led_ws_send_byte(pin, r);
+    led_ws_send_byte(pin, b);
+  }
+  interrupts();
+
+  // Single latch delay at the end (after all pixels)
+  delayMicroseconds(80);
+}
+
 static inline void led_allEN(bool on) {
   digitalWriteFast(LED_EN1, on);
   digitalWriteFast(LED_EN2, on);
@@ -437,10 +462,20 @@ static inline void led_allDI_low() {
 }
 
 static inline void led_setAll(uint8_t r, uint8_t g, uint8_t b, uint8_t br) {
-  led_ws_show_1pixel(LED_DI1, r, g, b, br);
-  led_ws_show_1pixel(LED_DI2, r, g, b, br);
-  led_ws_show_1pixel(LED_DI3, r, g, b, br);
-  led_ws_show_1pixel(LED_DI4, r, g, b, br);
+  // Use multi-pixel function if LEDs are chained, otherwise single pixel
+  if (LEDS_PER_PIN > 1) {
+    // LEDs are chained in series - send data for all LEDs on each pin
+    led_ws_show_npixels(LED_DI1, r, g, b, br, LEDS_PER_PIN);
+    led_ws_show_npixels(LED_DI2, r, g, b, br, LEDS_PER_PIN);
+    led_ws_show_npixels(LED_DI3, r, g, b, br, LEDS_PER_PIN);
+    led_ws_show_npixels(LED_DI4, r, g, b, br, LEDS_PER_PIN);
+  } else {
+    // Single LED per pin
+    led_ws_show_1pixel(LED_DI1, r, g, b, br);
+    led_ws_show_1pixel(LED_DI2, r, g, b, br);
+    led_ws_show_1pixel(LED_DI3, r, g, b, br);
+    led_ws_show_1pixel(LED_DI4, r, g, b, br);
+  }
 }
 
 __attribute__((used)) void update_led_status() {  // Made non-static so calibration functions can call it
