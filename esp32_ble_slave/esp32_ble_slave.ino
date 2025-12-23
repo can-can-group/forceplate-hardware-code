@@ -610,11 +610,17 @@ class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
         Serial.println("[BLE_SLAVE] ✓ BLE Client connected");
+        // Notify Teensy about BLE connection status
+        Serial2.println("BLE_CONNECTED");
+        Serial2.flush();
     };
 
     void onDisconnect(BLEServer* pServer) {
         deviceConnected = false;
         Serial.println("[BLE_SLAVE] ✗ BLE Client disconnected");
+        // Notify Teensy about BLE disconnection
+        Serial2.println("BLE_DISCONNECTED");
+        Serial2.flush();
     }
 };
 
@@ -1260,8 +1266,21 @@ void loop() {
     static unsigned long last_ble_packets = 0;
     static unsigned long last_uart_packets = 0;
     static unsigned long last_samples_batched = 0;
+    static unsigned long last_ble_status_send_ms = 0;
     
     unsigned long now = millis();
+    
+    // Send BLE connection status to Teensys every 5 seconds (so they know current state after reset)
+    if (now - last_ble_status_send_ms >= 5000) {
+        last_ble_status_send_ms = now;
+        if (deviceConnected) {
+            Serial2.println("BLE_CONNECTED");
+            Serial2.flush();
+        } else {
+            Serial2.println("BLE_DISCONNECTED");
+            Serial2.flush();
+        }
+    }
     
     // Send battery BLE notifications every 3 seconds (reduced to save bandwidth)
     if (now - last_battery_ble_send_ms >= 3000) {

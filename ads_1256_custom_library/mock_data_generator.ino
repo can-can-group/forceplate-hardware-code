@@ -29,8 +29,9 @@ static const int32_t MOCK_MIN = -10;  // Minimum output value (int16 compatible)
 static const int32_t MOCK_MAX = 10;   // Maximum output value (int16 compatible)
 static const int32_t MOCK_RANGE = MOCK_MAX - MOCK_MIN;  // Range: 20
 
-// Time tracking for wave generation
-static uint32_t mock_start_time = 0;
+// Time tracking for wave generation (use microsecond precision for smoothness)
+static uint32_t mock_start_time_ms = 0;
+static uint32_t mock_start_time_us = 0;
 
 // ============================================================================
 // WAVE GENERATION FUNCTIONS
@@ -44,25 +45,39 @@ static inline int32_t generate_square_wave(float t, float frequency) {
   return (sine_val >= 0.0f) ? MOCK_MAX : MOCK_MIN;
 }
 
-// Triangle wave: y = (2/π) * arcsin(sin(2πft))
+// Triangle wave: Linear ramp up then down
 // Output: MOCK_MIN to MOCK_MAX (linear ramp)
+// Direct calculation for perfect smoothness
 static inline int32_t generate_triangle_wave(float t, float frequency) {
-  float phase = 2.0f * 3.14159265359f * frequency * t;
-  float sine_val = sin(phase);
-  float triangle_val = (2.0f / 3.14159265359f) * asin(sine_val);
+  float phase = t * frequency;
+  // Get fractional part of phase [0, 1)
+  float fractional = phase - floor(phase);
+  
+  // Generate triangle: 0->1->0 over one period
+  float triangle_val;
+  if (fractional < 0.5f) {
+    // Rising edge: 0 to 0.5 -> output goes from -1 to 0
+    triangle_val = fractional * 4.0f - 1.0f;  // [-1, 1]
+  } else {
+    // Falling edge: 0.5 to 1.0 -> output goes from 1 to -1
+    triangle_val = 3.0f - fractional * 4.0f;  // [1, -1]
+  }
+  
   // Scale from [-1, 1] to [MOCK_MIN, MOCK_MAX]
   float scaled = (triangle_val + 1.0f) / 2.0f;  // [0, 1]
-  return MOCK_MIN + (int32_t)(scaled * MOCK_RANGE);
+  return MOCK_MIN + (int32_t)roundf(scaled * MOCK_RANGE);
 }
 
 // Sawtooth wave: y = 2(tf - floor(tf + 0.5))
 // Output: MOCK_MIN to MOCK_MAX (periodic reset)
 static inline int32_t generate_sawtooth_wave(float t, float frequency) {
   float phase = t * frequency;
-  float sawtooth_val = 2.0f * (phase - floor(phase + 0.5f));  // [-1, 1]
+  // Use fractional part for smooth sawtooth
+  float fractional = phase - floor(phase);  // [0, 1)
+  float sawtooth_val = 2.0f * fractional - 1.0f;  // [-1, 1)
   // Scale from [-1, 1] to [MOCK_MIN, MOCK_MAX]
-  float scaled = (sawtooth_val + 1.0f) / 2.0f;  // [0, 1]
-  return MOCK_MIN + (int32_t)(scaled * MOCK_RANGE);
+  float scaled = (sawtooth_val + 1.0f) / 2.0f;  // [0, 1)
+  return MOCK_MIN + (int32_t)roundf(scaled * MOCK_RANGE);
 }
 
 // Sine wave: y = sin(2πft)
@@ -72,7 +87,7 @@ static inline int32_t generate_sine_wave(float t, float frequency) {
   float sine_val = sin(phase);  // [-1, 1]
   // Scale from [-1, 1] to [MOCK_MIN, MOCK_MAX]
   float scaled = (sine_val + 1.0f) / 2.0f;  // [0, 1]
-  return MOCK_MIN + (int32_t)(scaled * MOCK_RANGE);
+  return MOCK_MIN + (int32_t)roundf(scaled * MOCK_RANGE);
 }
 
 // ============================================================================
@@ -83,7 +98,8 @@ static inline int32_t generate_sine_wave(float t, float frequency) {
 void mock_data_set_enabled(bool enabled) {
   mock_data_enabled = enabled;
   if (enabled) {
-    mock_start_time = millis();
+    mock_start_time_ms = millis();
+    mock_start_time_us = micros();
     Serial.println("[MOCK] Mock data generation ENABLED");
     Serial.printf("[MOCK] Output range: %d to %d (int16 compatible)\n", MOCK_MIN, MOCK_MAX);
     Serial.println("[MOCK] Ch0: Square, Ch1: Triangle, Ch2: Sawtooth, Ch3: Sine");
@@ -102,8 +118,21 @@ int32_t mock_data_generate(uint8_t channel) {
     return 0;
   }
   
-  // Calculate time in seconds since mock data was enabled
-  float t = (millis() - mock_start_time) / 1000.0f;
+  // Calculate time in seconds with microsecond precision for smoothness
+  // Use micros() for better resolution, but handle overflow
+  uint32_t current_us = micros();
+  uint32_t elapsed_us;
+  
+  // Handle micros() overflow (happens every ~70 minutes)
+  if (current_us >= mock_start_time_us) {
+    elapsed_us = current_us - mock_start_time_us;
+  } else {
+    // Overflow occurred, calculate from millis() as fallback
+    elapsed_us = (millis() - mock_start_time_ms) * 1000UL;
+  }
+  
+  // Convert to seconds with high precision
+  float t = elapsed_us / 1000000.0f;
   
   // Generate different wave types for each channel
   int32_t value = 0;

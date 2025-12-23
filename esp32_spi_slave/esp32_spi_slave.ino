@@ -227,6 +227,23 @@ static void process_espnow_command(const ESPNowCommand* cmd) {
             send_espnow_response("PONG_TIMEOUT");
         }
     }
+    // BLE connection status commands - forward to Teensy immediately
+    else if (cmd_upper == "BLE_CONNECTED" || cmd_upper == "BLE_DISCONNECTED") {
+        Serial.printf("[SPI_SLAVE] Forwarding BLE status '%s' to Remote Teensy...\n", safe_command);
+        Serial1.println(safe_command);
+        Serial1.flush();
+        
+        // Wait for response
+        unsigned long timeout = millis() + 2000;
+        while (millis() < timeout) {
+            if (Serial1.available()) {
+                String response = Serial1.readStringUntil('\n');
+                Serial.printf("[SPI_SLAVE] Teensy Response: %s\n", response.c_str());
+                break;
+            }
+            delay(10);
+        }
+    }
     // Control commands - forward to Teensy
     else if (cmd_upper == "START" || cmd_upper == "STOP" ||
              cmd_upper == "RESTART" || cmd_upper == "RESET" ||
@@ -811,8 +828,24 @@ void handle_serial_commands() {
     
     Serial.printf("[SPI_SLAVE] Command: %s\n", command.c_str());
     
+    // BLE connection status commands - forward to Teensy immediately
+    if (command == "BLE_CONNECTED" || command == "BLE_DISCONNECTED") {
+      Serial.printf("[SPI_SLAVE] Forwarding BLE status '%s' to Remote Teensy...\n", command.c_str());
+      Serial1.println(command);
+      Serial1.flush();
+      
+      unsigned long timeout = millis() + 2000;
+      while (millis() < timeout) {
+        if (Serial1.available()) {
+          String response = Serial1.readStringUntil('\n');
+          Serial.printf("[SPI_SLAVE] Teensy Response: %s\n", response.c_str());
+          break;
+        }
+        delay(10);
+      }
+    }
     // Teensy control commands
-    if (command == "START" || command == "STOP" || command == "RESTART" || command == "RESET" ||
+    else if (command == "START" || command == "STOP" || command == "RESTART" || command == "RESET" ||
         command == "LED_ON" || command == "LED_OFF" ||
         command == "MOCK_ON" || command == "MOCK_OFF") {
       Serial.printf("[SPI_SLAVE] Forwarding '%s' to Teensy...\n", command.c_str());

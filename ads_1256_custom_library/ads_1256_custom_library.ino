@@ -70,6 +70,10 @@ static uint32_t led_last_update_ms = 0;
 static uint32_t led_success_start_ms = 0;  // For success flash timing
 static uint8_t led_brightness = 80;  // Default brightness (0-255)
 static bool led_enabled = true;      // Master LED enable flag
+static bool ble_connected = false;  // BLE connection status
+static bool ble_connect_flash_active = false;  // Flash animation when BLE connects
+static uint32_t ble_connect_flash_start_ms = 0;  // When BLE connect flash started
+static uint8_t ble_connect_flash_count = 0;  // Number of flashes completed
 
 // ============================================================================
 // DATA ACQUISITION STATE MANAGEMENT
@@ -458,21 +462,70 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
       break;
       
     case LED_IDLE:
-      if (mock_mode) {
-        // Yellow breathing effect (2 second cycle) - Mock data mode
-        {
-          float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
-          float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
-          uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
-          led_setAll(255, 200, 0, br);  // Yellow breathing
+      if (ble_connected) {
+        // Handle BLE connect flash animation (2 flashes, then solid)
+        if (ble_connect_flash_active) {
+          uint32_t flash_elapsed = now - ble_connect_flash_start_ms;
+          
+          // Flash pattern: 200ms ON, 200ms OFF, 200ms ON, 200ms OFF = 800ms total
+          // Flash 1: 0-200ms ON, 200-400ms OFF
+          // Flash 2: 400-600ms ON, 600-800ms OFF
+          // After 800ms: solid
+          
+          if (flash_elapsed < 800) {
+            uint32_t cycle_pos = flash_elapsed % 400;  // Position within each 400ms cycle
+            
+            if (cycle_pos < 200) {
+              // Flash ON (first 200ms of each cycle)
+              if (mock_mode) {
+                led_setAll(255, 200, 0, led_brightness);  // Yellow
+              } else {
+                led_setAll(167, 36, 104, led_brightness);  // Pink/Magenta #A72468
+              }
+            } else {
+              // Flash OFF (last 200ms of each cycle)
+              led_setAll(0, 0, 0, 0);
+            }
+          } else {
+            // Flash animation complete, go to solid
+            ble_connect_flash_active = false;
+            ble_connect_flash_count = 2;
+            
+            // Fall through to solid color
+            if (mock_mode) {
+              led_setAll(255, 200, 0, led_brightness);  // Yellow solid
+            } else {
+              led_setAll(167, 36, 104, led_brightness);  // Pink/Magenta solid #A72468
+            }
+          }
+        } else {
+          // Solid color when BLE is connected (after flash animation)
+          if (mock_mode) {
+            // Yellow solid - Mock data mode, BLE connected
+            led_setAll(255, 200, 0, led_brightness);
+          } else {
+            // Pink/Magenta solid - Real data mode, BLE connected
+            led_setAll(167, 36, 104, led_brightness);  // #A72468
+          }
         }
       } else {
-        // Pink/Magenta breathing effect (2 second cycle) - Real data mode
-        {
-          float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
-          float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
-          uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
-          led_setAll(167, 36, 104, br);  // #A72468 - Pink/Magenta
+        // Breathing effect when BLE is not connected
+        if (mock_mode) {
+          // Yellow breathing effect (2 second cycle) - Mock data mode, BLE disconnected
+          {
+            float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
+            float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
+            uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
+            led_setAll(255, 200, 0, br);  // Yellow breathing
+          }
+        } else {
+          // Pink/Magenta breathing effect (2 second cycle) - Real data mode, BLE disconnected
+          {
+            float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
+            float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
+            uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
+            led_setAll(167, 36, 104, br);  // #A72468 - Pink/Magenta breathing
+          }
         }
       }
       break;
@@ -781,7 +834,31 @@ void handle_esp32_commands() {
     
     Serial.printf("[T41] ESP32 Command: %s\n", command.c_str());
     
-    if (command == "START") {
+    // BLE connection status commands
+    if (command == "BLE_CONNECTED") {
+      if (!ble_connected) {  // Only flash if transitioning from disconnected to connected
+        ble_connected = true;
+        // Start flash animation (2 flashes, then solid)
+        ble_connect_flash_active = true;
+        ble_connect_flash_start_ms = millis();
+        ble_connect_flash_count = 0;
+        Serial.println("[T41] ✓ BLE connected - LED: flashing then solid");
+      } else {
+        // Already connected, just update status (no flash)
+        ble_connected = true;
+        Serial.println("[T41] ✓ BLE already connected - LED: solid");
+      }
+      update_led_status();  // Update LED immediately
+      send_status_response("BLE_CONNECTED", "OK");
+    }
+    else if (command == "BLE_DISCONNECTED") {
+      ble_connected = false;
+      ble_connect_flash_active = false;  // Cancel any flash animation
+      Serial.println("[T41] ✗ BLE disconnected - LED: breathing");
+      update_led_status();  // Update LED immediately
+      send_status_response("BLE_DISCONNECTED", "OK");
+    }
+    else if (command == "START") {
       if (start_data_acquisition()) {
         send_status_response("START", "OK");
       } else {

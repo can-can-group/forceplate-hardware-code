@@ -630,7 +630,21 @@ static void handle_serial_commands() {
         
         if (command.length() > 0) {
             Serial.printf("[RX_RADIO] UART Command received from BLE Slave: %s\n", command.c_str());
-            process_command(command);
+            
+            // Forward BLE connection status to BOTH Local and Remote Teensy
+            if (command == "BLE_CONNECTED" || command == "BLE_DISCONNECTED") {
+                Serial.printf("[RX_RADIO] Forwarding BLE status '%s' to BOTH Local and Remote Teensy...\n", command.c_str());
+                
+                // Send to Local Teensy via Serial1
+                Serial1.println(command);
+                Serial1.flush();
+                
+                // Send to Remote Teensy via ESP-NOW
+                send_espnow_command(command.c_str());
+            } else {
+                // Process other commands normally
+                process_command(command);
+            }
         }
     }
 }
