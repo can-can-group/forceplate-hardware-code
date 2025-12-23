@@ -553,7 +553,7 @@ static void espnow_rx_callback(const esp_now_recv_info *recv_info, const uint8_t
             // Check if remote Teensy is requesting BLE status (on boot)
             if (response_str == "REQUEST_BLE_STATUS") {
                 Serial.println("[RX_RADIO] Remote Teensy requesting BLE status, forwarding to BLE Slave...");
-                Serial2.println("BLE_STATUS");
+                Serial2.println("@@BLE_STATUS");  // Use @@ prefix for commands to BLE Slave
                 Serial2.flush();
                 // Response (BLE_CONNECTED/BLE_DISCONNECTED) will be handled by handle_serial_commands
                 // which forwards to BOTH local and remote Teensy
@@ -1202,7 +1202,7 @@ void loop() {
             // Check if Teensy is requesting BLE status (on boot)
             if (line == "REQUEST_BLE_STATUS") {
                 Serial.println("[RX_RADIO] Teensy requesting BLE status, forwarding to BLE Slave...");
-                Serial2.println("BLE_STATUS");
+                Serial2.println("@@BLE_STATUS");  // Use @@ prefix for commands to BLE Slave
                 Serial2.flush();
                 // Response will come back via ##LOCAL: prefix and be forwarded to Teensy
             } else {

@@ -1045,25 +1045,28 @@ static void uart_rx_task(void* param) {
                     continue;
                 }
                 
-                // Check for text commands from RX Radio (e.g., BLE_STATUS)
-                // Commands start with uppercase letter (A-Z) or lowercase (a-z)
-                if ((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z')) {
-                    // Read the full command line
-                    String uart_command = "";
-                    uart_command += (char)Serial2.read();  // consume first char
-                    uart_command += Serial2.readStringUntil('\n');
-                    uart_command.trim();
-                    uart_command.toUpperCase();
-                    
-                    if (uart_command.length() > 0) {
-                        Serial.printf("[BLE_SLAVE] UART command from RX Radio: %s\n", uart_command.c_str());
+                // Check for text commands from RX Radio using @@ prefix (e.g., @@BLE_STATUS)
+                // Use @@ (0x40 0x40) as command prefix - won't conflict with binary data
+                if (byte == '@') {
+                    Serial2.read();  // consume first '@'
+                    if (Serial2.peek() == '@') {
+                        Serial2.read();  // consume second '@'
                         
-                        // Handle BLE_STATUS request from Teensy (on boot)
-                        if (uart_command == "BLE_STATUS") {
-                            // Send current BLE status back to RX Radio (which forwards to Teensy)
-                            Serial2.println(deviceConnected ? "BLE_CONNECTED" : "BLE_DISCONNECTED");
-                            Serial2.flush();
-                            Serial.printf("[BLE_SLAVE] Sent BLE status: %s\n", deviceConnected ? "CONNECTED" : "DISCONNECTED");
+                        // Read the command line
+                        String uart_command = Serial2.readStringUntil('\n');
+                        uart_command.trim();
+                        uart_command.toUpperCase();
+                        
+                        if (uart_command.length() > 0) {
+                            Serial.printf("[BLE_SLAVE] UART command from RX Radio: %s\n", uart_command.c_str());
+                            
+                            // Handle BLE_STATUS request from Teensy (on boot)
+                            if (uart_command == "BLE_STATUS") {
+                                // Send current BLE status back to RX Radio (which forwards to Teensy)
+                                Serial2.println(deviceConnected ? "BLE_CONNECTED" : "BLE_DISCONNECTED");
+                                Serial2.flush();
+                                Serial.printf("[BLE_SLAVE] Sent BLE status: %s\n", deviceConnected ? "CONNECTED" : "DISCONNECTED");
+                            }
                         }
                     }
                     bytes_received = 0;
