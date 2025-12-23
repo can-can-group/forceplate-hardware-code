@@ -28,7 +28,7 @@ static const float VBAT_GAIN     = 1.0000f;
 static const float VBAT_OFFSET_V = -0.111f;
 
 // Sampling
-static const uint32_t BMS_SAMPLE_MS = 2500;  // Read battery every 2.5 seconds (reduced to save wireless bandwidth)
+static const uint32_t BMS_SAMPLE_MS = 30000;  // Read battery every 30 seconds (reduced to save wireless bandwidth)
 static const float EMA_ALPHA = 0.10f;
 
 // BQ register map (subset for reading)
@@ -242,6 +242,39 @@ static void process_espnow_command(const ESPNowCommand* cmd) {
                 break;
             }
             delay(10);
+        }
+    }
+    // STATUS command - forward to Teensy and return response via ESP-NOW
+    else if (cmd_upper == "STATUS") {
+        Serial.println("[SPI_SLAVE] STATUS requested via ESP-NOW, forwarding to Teensy...");
+        
+        // Clear RX buffer
+        while (Serial1.available()) Serial1.read();
+        
+        Serial1.println("STATUS");
+        Serial1.flush();
+        
+        // Wait for response from Teensy
+        unsigned long timeout = millis() + 3000;
+        String teensy_response = "";
+        
+        while (millis() < timeout) {
+            if (Serial1.available()) {
+                teensy_response = Serial1.readStringUntil('\n');
+                teensy_response.trim();
+                if (teensy_response.length() > 0) {
+                    break;
+                }
+            }
+            delay(5);
+        }
+        
+        if (teensy_response.length() > 0) {
+            Serial.printf("[SPI_SLAVE] ✓ STATUS response: '%s'\n", teensy_response.c_str());
+            send_espnow_response(teensy_response.c_str());
+        } else {
+            Serial.println("[SPI_SLAVE] ✗ STATUS timeout");
+            send_espnow_response("STATUS:TIMEOUT");
         }
     }
     // Control commands - forward to Teensy
@@ -1023,12 +1056,19 @@ void setup() {
 }
 
 void loop() {
-  // Forward any Teensy responses
+  // Forward any Teensy responses / handle special commands
   while (Serial1.available()) {
     String line = Serial1.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) {
       Serial.printf("[SPI_SLAVE] Teensy: %s\n", line.c_str());
+      
+      // Check if Remote Teensy is requesting BLE status (on boot)
+      if (line == "REQUEST_BLE_STATUS") {
+        Serial.println("[SPI_SLAVE] Remote Teensy requesting BLE status, forwarding via ESP-NOW...");
+        // Send command to RX Radio which will forward to BLE Slave
+        send_espnow_response("REQUEST_BLE_STATUS");
+      }
     }
   }
   

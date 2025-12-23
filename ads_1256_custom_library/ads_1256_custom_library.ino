@@ -923,8 +923,10 @@ void handle_esp32_commands() {
     else if (command == "STATUS") {
       const char* state_names_arr[] = {"STOPPED", "STARTING", "RUNNING", "STOPPING", "ERROR"};
       char buf[128];
-      snprintf(buf, sizeof(buf), "STATUS:state=%s,frames=%lu",
-               state_names_arr[current_state], (unsigned long)st.frames_sent);
+      snprintf(buf, sizeof(buf), "STATUS:state=%s,led=%s,frames=%lu",
+               state_names_arr[current_state], 
+               led_enabled ? "ON" : "OFF",
+               (unsigned long)st.frames_sent);
       softSerialTX_println(buf);
       send_status_response("STATUS", "OK");
     }
@@ -1556,6 +1558,12 @@ void setup() {
   
   // Send initial state to ESP32
   send_state_update();
+  
+  // Request BLE connection status after boot (to set correct LED state)
+  // Wait a bit for ESP32 chain to be ready
+  delay(500);
+  Serial.println("[T41] Requesting BLE connection status...");
+  softSerialTX_println("REQUEST_BLE_STATUS");
 }
 
 void loop() {

@@ -55,6 +55,12 @@ static uint32_t last_battery_received_ms = 0;
 static uint32_t last_battery_ble_send_ms = 0;
 static unsigned long battery_packets_received = 0;
 
+// Status data storage (for STATUS command)
+static String status_local_state = "UNKNOWN";
+static String status_local_led = "UNKNOWN";
+static String status_remote_state = "UNKNOWN";
+static String status_remote_led = "UNKNOWN";
+
 // ============================================================================
 // BLE CONFIGURATION
 // ============================================================================
@@ -444,6 +450,53 @@ static void send_timeout_json_response(const char* target, const char* cmd, unsi
     send_ble_json_response(json);
 }
 
+// Parse STATUS response from Teensy (format: STATUS:state=RUNNING,led=ON,frames=1234)
+static void parse_status_response(const String& response, String& state, String& led) {
+    state = "UNKNOWN";
+    led = "UNKNOWN";
+    
+    // Find state= field
+    int state_pos = response.indexOf("state=");
+    if (state_pos >= 0) {
+        int comma_pos = response.indexOf(',', state_pos);
+        if (comma_pos > state_pos) {
+            state = response.substring(state_pos + 6, comma_pos);
+        }
+    }
+    
+    // Find led= field
+    int led_pos = response.indexOf("led=");
+    if (led_pos >= 0) {
+        int comma_pos = response.indexOf(',', led_pos);
+        if (comma_pos > led_pos) {
+            led = response.substring(led_pos + 4, comma_pos);
+        } else {
+            // No comma after led, take rest of string
+            led = response.substring(led_pos + 4);
+            // Remove any trailing non-alphanumeric characters
+            led.trim();
+            int end_pos = led.indexOf(',');
+            if (end_pos < 0) end_pos = led.indexOf(';');
+            if (end_pos >= 0) led = led.substring(0, end_pos);
+        }
+    }
+}
+
+// Send combined STATUS JSON response
+static void send_status_json_response(unsigned long ms) {
+    char json[350];
+    snprintf(json, sizeof(json), 
+        "{\"target\":\"BLE\",\"cmd\":\"STATUS\",\"ok\":true,"
+        "\"local\":{\"state\":\"%s\",\"led\":\"%s\"},"
+        "\"remote\":{\"state\":\"%s\",\"led\":\"%s\"},"
+        "\"ble\":\"%s\",\"ms\":%lu}",
+        status_local_state.c_str(), status_local_led.c_str(),
+        status_remote_state.c_str(), status_remote_led.c_str(),
+        deviceConnected ? "CONNECTED" : "DISCONNECTED",
+        ms);
+    send_ble_json_response(json);
+}
+
 // ============================================================================
 // BLE COMMAND PROCESSING
 // ============================================================================
@@ -574,6 +627,122 @@ static void process_ble_command(String command) {
                      battery_local_voltage, battery_local_soc, 
                      battery_remote_voltage, battery_remote_soc);
         send_battery_json_response();
+        return;
+    }
+    
+    // BLE_STATUS - Request-based BLE connection status (replaces periodic broadcast)
+    if (command == "BLE_STATUS") {
+        Serial.printf("[BLE_SLAVE] BLE Status requested: %s\n", deviceConnected ? "CONNECTED" : "DISCONNECTED");
+        // Send status to RX Radio (which forwards to Teensys)
+        Serial2.println(deviceConnected ? "BLE_CONNECTED" : "BLE_DISCONNECTED");
+        Serial2.flush();
+        send_control_json_response("BLE", "BLE_STATUS", true, 0);
+        return;
+    }
+    
+    // STATUS - Get combined status from both plates (LED on/off, acquisition state)
+    if (command == "STATUS") {
+        Serial.println("[BLE_SLAVE] STATUS command - querying both plates...");
+        unsigned long start_time = millis();
+        
+        // Reset status values
+        status_local_state = "UNKNOWN";
+        status_local_led = "UNKNOWN";
+        status_remote_state = "UNKNOWN";
+        status_remote_led = "UNKNOWN";
+        
+        // Clear previous response
+        if (command_response_mutex != NULL && xSemaphoreTake(command_response_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            command_response_ready = false;
+            command_response_data = "";
+            xSemaphoreGive(command_response_mutex);
+        }
+        
+        // Query LOCAL status
+        Serial.println("[BLE_SLAVE] Querying LOCAL_STATUS...");
+        Serial2.println("LOCAL_STATUS");
+        Serial2.flush();
+        
+        // Wait for local response
+        unsigned long timeout = millis() + 3000;
+        bool got_local = false;
+        
+        while (millis() < timeout) {
+            if (command_response_mutex != NULL && xSemaphoreTake(command_response_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                if (command_response_ready) {
+                    String response = command_response_data;
+                    command_response_ready = false;
+                    xSemaphoreGive(command_response_mutex);
+                    
+                    // Check if this is a LOCAL response
+                    if (response.startsWith("LOCAL:")) {
+                        String status_part = response.substring(6);
+                        parse_status_response(status_part, status_local_state, status_local_led);
+                        Serial.printf("[BLE_SLAVE] LOCAL: state=%s, led=%s\n", 
+                                     status_local_state.c_str(), status_local_led.c_str());
+                        got_local = true;
+                        break;
+                    }
+                    // If not local, might be stale data, continue waiting
+                } else {
+                    xSemaphoreGive(command_response_mutex);
+                }
+            }
+            delay(10);
+        }
+        
+        if (!got_local) {
+            Serial.println("[BLE_SLAVE] LOCAL_STATUS timeout");
+        }
+        
+        // Clear for next response
+        if (command_response_mutex != NULL && xSemaphoreTake(command_response_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            command_response_ready = false;
+            command_response_data = "";
+            xSemaphoreGive(command_response_mutex);
+        }
+        
+        // Query REMOTE status
+        Serial.println("[BLE_SLAVE] Querying REMOTE_STATUS...");
+        Serial2.println("REMOTE_STATUS");
+        Serial2.flush();
+        
+        // Wait for remote response
+        timeout = millis() + 3000;
+        bool got_remote = false;
+        
+        while (millis() < timeout) {
+            if (command_response_mutex != NULL && xSemaphoreTake(command_response_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                if (command_response_ready) {
+                    String response = command_response_data;
+                    command_response_ready = false;
+                    xSemaphoreGive(command_response_mutex);
+                    
+                    // Check if this is a REMOTE response
+                    if (response.startsWith("REMOTE:")) {
+                        String status_part = response.substring(7);
+                        parse_status_response(status_part, status_remote_state, status_remote_led);
+                        Serial.printf("[BLE_SLAVE] REMOTE: state=%s, led=%s\n", 
+                                     status_remote_state.c_str(), status_remote_led.c_str());
+                        got_remote = true;
+                        break;
+                    }
+                } else {
+                    xSemaphoreGive(command_response_mutex);
+                }
+            }
+            delay(10);
+        }
+        
+        if (!got_remote) {
+            Serial.println("[BLE_SLAVE] REMOTE_STATUS timeout");
+        }
+        
+        unsigned long round_trip_ms = millis() - start_time;
+        Serial.printf("[BLE_SLAVE] STATUS complete (%lu ms)\n", round_trip_ms);
+        
+        // Send combined JSON response
+        send_status_json_response(round_trip_ms);
         return;
     }
 
@@ -870,6 +1039,31 @@ static void uart_rx_task(void* param) {
                                 command_response_ready = true;
                                 xSemaphoreGive(command_response_mutex);
                             }
+                        }
+                    }
+                    bytes_received = 0;
+                    continue;
+                }
+                
+                // Check for text commands from RX Radio (e.g., BLE_STATUS)
+                // Commands start with uppercase letter (A-Z) or lowercase (a-z)
+                if ((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z')) {
+                    // Read the full command line
+                    String uart_command = "";
+                    uart_command += (char)Serial2.read();  // consume first char
+                    uart_command += Serial2.readStringUntil('\n');
+                    uart_command.trim();
+                    uart_command.toUpperCase();
+                    
+                    if (uart_command.length() > 0) {
+                        Serial.printf("[BLE_SLAVE] UART command from RX Radio: %s\n", uart_command.c_str());
+                        
+                        // Handle BLE_STATUS request from Teensy (on boot)
+                        if (uart_command == "BLE_STATUS") {
+                            // Send current BLE status back to RX Radio (which forwards to Teensy)
+                            Serial2.println(deviceConnected ? "BLE_CONNECTED" : "BLE_DISCONNECTED");
+                            Serial2.flush();
+                            Serial.printf("[BLE_SLAVE] Sent BLE status: %s\n", deviceConnected ? "CONNECTED" : "DISCONNECTED");
                         }
                     }
                     bytes_received = 0;
@@ -1270,20 +1464,11 @@ void loop() {
     
     unsigned long now = millis();
     
-    // Send BLE connection status to Teensys every 5 seconds (so they know current state after reset)
-    if (now - last_ble_status_send_ms >= 5000) {
-        last_ble_status_send_ms = now;
-        if (deviceConnected) {
-            Serial2.println("BLE_CONNECTED");
-            Serial2.flush();
-        } else {
-            Serial2.println("BLE_DISCONNECTED");
-            Serial2.flush();
-        }
-    }
+    // NOTE: Removed periodic BLE status sending - now request-based via BLE_STATUS command
+    // Teensys can request BLE status when needed instead of receiving it every 5 seconds
     
-    // Send battery BLE notifications every 3 seconds (reduced to save bandwidth)
-    if (now - last_battery_ble_send_ms >= 3000) {
+    // Send battery BLE notifications every 30 seconds (reduced to save bandwidth)
+    if (now - last_battery_ble_send_ms >= 30000) {
         last_battery_ble_send_ms = now;
         send_battery_ble_notification();
     }

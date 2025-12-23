@@ -26,7 +26,7 @@ static const float VBAT_OFFSET_V = -0.111f;
 
 // Sampling
 static const uint32_t BMS_SAMPLE_MS = 2500;   // Read battery every 2.5 seconds
-static const uint32_t BMS_UART_SEND_MS = 3000; // Send battery data to BLE slave every 3 seconds
+static const uint32_t BMS_UART_SEND_MS = 30000; // Send battery data to BLE slave every 30 seconds
 static const float EMA_ALPHA = 0.10f;
 
 // BQ register map (subset for reading)
@@ -550,6 +550,16 @@ static void espnow_rx_callback(const esp_now_recv_info *recv_info, const uint8_t
         if (validate_espnow_response(resp)) {
             String response_str = String(resp->response);
             
+            // Check if remote Teensy is requesting BLE status (on boot)
+            if (response_str == "REQUEST_BLE_STATUS") {
+                Serial.println("[RX_RADIO] Remote Teensy requesting BLE status, forwarding to BLE Slave...");
+                Serial2.println("BLE_STATUS");
+                Serial2.flush();
+                // Response (BLE_CONNECTED/BLE_DISCONNECTED) will be handled by handle_serial_commands
+                // which forwards to BOTH local and remote Teensy
+                return;
+            }
+            
             // Store response for command handlers (PING, CAL, etc.)
             // The command handler will forward to BLE Slave
             if (response_mutex != NULL && xSemaphoreTake(response_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -729,6 +739,86 @@ static void process_command(String command) {
             Serial.printf("[RX_RADIO] ✓ Remote command '%s' sent successfully\n", teensy_command.c_str());
         } else {
             Serial.printf("[RX_RADIO] ✗ Failed to send remote command '%s'\n", teensy_command.c_str());
+        }
+    }
+    // LOCAL_STATUS - Get status from local Teensy (for BLE STATUS command)
+    else if (command == "LOCAL_STATUS") {
+        Serial.println("[RX_RADIO] LOCAL_STATUS requested");
+        
+        // Clear any stale data in Serial1 RX buffer
+        while (Serial1.available()) Serial1.read();
+        
+        Serial1.println("STATUS");
+        Serial1.flush();
+        
+        // Wait for response from Local Teensy
+        unsigned long timeout = millis() + 3000;
+        bool got_response = false;
+        String response_text = "";
+        
+        while (millis() < timeout) {
+            if (Serial1.available()) {
+                response_text = Serial1.readStringUntil('\n');
+                response_text.trim();
+                if (response_text.length() > 0) {
+                    got_response = true;
+                    break;
+                }
+            }
+            delay(5);
+        }
+        
+        if (got_response) {
+            Serial.printf("[RX_RADIO] Local STATUS: %s\n", response_text.c_str());
+            Serial2.printf("##LOCAL:%s\n", response_text.c_str());
+            Serial2.flush();
+        } else {
+            Serial.println("[RX_RADIO] ✗ Local STATUS timeout");
+            Serial2.println("##LOCAL:STATUS:TIMEOUT");
+            Serial2.flush();
+        }
+    }
+    // REMOTE_STATUS - Get status from remote Teensy via ESP-NOW (for BLE STATUS command)
+    else if (command == "REMOTE_STATUS") {
+        Serial.println("[RX_RADIO] REMOTE_STATUS requested");
+        
+        // Clear previous response
+        if (response_mutex != NULL && xSemaphoreTake(response_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            espnow_response_ready = false;
+            espnow_response_data = "";
+            xSemaphoreGive(response_mutex);
+        }
+        
+        if (send_espnow_command("STATUS")) {
+            // Wait for response from SPI Slave
+            unsigned long timeout = millis() + 3000;
+            String response = "";
+            
+            while (millis() < timeout) {
+                if (response_mutex != NULL && xSemaphoreTake(response_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    if (espnow_response_ready) {
+                        response = espnow_response_data;
+                        espnow_response_ready = false;
+                        xSemaphoreGive(response_mutex);
+                        break;
+                    }
+                    xSemaphoreGive(response_mutex);
+                }
+                delay(10);
+            }
+            
+            if (response.length() > 0) {
+                Serial.printf("[RX_RADIO] Remote STATUS: %s\n", response.c_str());
+                Serial2.printf("##REMOTE:%s\n", response.c_str());
+            } else {
+                Serial.println("[RX_RADIO] ✗ Remote STATUS timeout");
+                Serial2.println("##REMOTE:STATUS:TIMEOUT");
+            }
+            Serial2.flush();
+        } else {
+            Serial.println("[RX_RADIO] ✗ Failed to send STATUS via ESP-NOW");
+            Serial2.println("##REMOTE:STATUS:ESPNOW_ERR");
+            Serial2.flush();
         }
     }
     // Remote PING test
@@ -1108,9 +1198,18 @@ void loop() {
         
         if (line.length() > 0) {
             Serial.printf("[RX_RADIO] Local Teensy: %s\n", line.c_str());
-            // Use "##" prefix to distinguish text from binary UART packets
-            Serial2.printf("##LOCAL:%s\n", line.c_str());
-            Serial2.flush();
+            
+            // Check if Teensy is requesting BLE status (on boot)
+            if (line == "REQUEST_BLE_STATUS") {
+                Serial.println("[RX_RADIO] Teensy requesting BLE status, forwarding to BLE Slave...");
+                Serial2.println("BLE_STATUS");
+                Serial2.flush();
+                // Response will come back via ##LOCAL: prefix and be forwarded to Teensy
+            } else {
+                // Use "##" prefix to distinguish text from binary UART packets
+                Serial2.printf("##LOCAL:%s\n", line.c_str());
+                Serial2.flush();
+            }
         }
     }
     

@@ -194,6 +194,53 @@ Bytes 1-160:   samples[sample_count]
 | `LOCAL_CAL_POINTS` | Show point counts |
 | `REMOTE_CAL_*` | Same commands for remote Teensy |
 
+### Status Command
+
+| Command | Description |
+|---------|-------------|
+| `STATUS` | Get combined status from both plates (LED on/off, acquisition state, BLE connection) |
+
+**STATUS Response Format:**
+```json
+{
+  "target": "BLE",
+  "cmd": "STATUS",
+  "ok": true,
+  "local": {
+    "state": "RUNNING",
+    "led": "ON"
+  },
+  "remote": {
+    "state": "STOPPED",
+    "led": "OFF"
+  },
+  "ble": "CONNECTED",
+  "ms": 250
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `local.state` | Local Teensy acquisition state (`STOPPED`, `STARTING`, `RUNNING`, `STOPPING`, `ERROR`) |
+| `local.led` | Local Teensy LED status (`ON`, `OFF`, `UNKNOWN`) |
+| `remote.state` | Remote Teensy acquisition state |
+| `remote.led` | Remote Teensy LED status |
+| `ble` | BLE connection status (`CONNECTED`, `DISCONNECTED`) |
+| `ms` | Round-trip time in milliseconds |
+
+**Usage Example:**
+```python
+# Python example
+await client.write_gatt_char(CMD_UUID, b"STATUS")
+# Response: {"target":"BLE","cmd":"STATUS","ok":true,"local":{"state":"RUNNING","led":"ON"},...}
+```
+
+```javascript
+// JavaScript example
+await cmdChar.writeValue(encoder.encode('STATUS'));
+// Response on notification: {"target":"BLE","cmd":"STATUS","ok":true,...}
+```
+
 ### Statistics Commands
 
 | Command | Description |
