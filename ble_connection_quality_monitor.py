@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BLE Connection Quality Monitor
-Monitors BLE data stream quality, sample rate, packet loss, and latency.
+Monitors BLE data stream quality, sample rate, and packet loss.
 Target: 1000 samples/second with zero data loss.
 """
 
@@ -77,7 +77,12 @@ class BLEQualityMonitor:
         self.quality_issues: List[str] = []
         
     def parse_packet(self, data: bytes) -> Optional[int]:
-        """Parse BLE packet and return sample count."""
+        """Parse BLE packet and return sample count.
+        
+        Packet format (161 bytes for 10 samples):
+        - byte 0: sample_count (uint8)
+        - bytes 1+: samples (16 bytes each)
+        """
         if len(data) < 1:
             self.invalid_packets += 1
             return None
