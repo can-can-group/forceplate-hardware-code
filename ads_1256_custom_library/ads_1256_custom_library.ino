@@ -816,6 +816,7 @@ bool start_data_acquisition() {
   current_state = STATE_RUNNING;
   current_led_status = LED_RUNNING;
   state_changed = true;
+  update_led_status();  // Update LED before entering RUNNING (no updates during run)
 
   Serial.println("[T41] Data acquisition started");
   return true;
@@ -838,6 +839,7 @@ bool stop_data_acquisition() {
   current_state = STATE_STOPPED;
   current_led_status = LED_IDLE;
   state_changed = true;
+  update_led_status();  // Update LED when stopped
 
   Serial.println("[T41] Data acquisition stopped");
   return true;
@@ -1574,8 +1576,10 @@ void loop() {
   handle_serial_monitor_commands();
   
   // Update LED status (every 50ms for smooth animations)
+  // Skip LED updates during RUNNING state to avoid timing interference
+  // (WS2812 uses noInterrupts() which blocks millis()/timing)
   static uint32_t last_led_update = 0;
-  if (millis() - last_led_update >= 50) {
+  if (current_state != STATE_RUNNING && millis() - last_led_update >= 50) {
     update_led_status();
     last_led_update = millis();
   }
