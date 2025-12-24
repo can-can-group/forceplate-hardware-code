@@ -4,6 +4,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <esp_bt.h>  // For BLE TX power control
 #include "common_frame.h"
 
 // ============================================================================
@@ -783,6 +784,17 @@ class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
         Serial.println("[BLE_SLAVE] ✓ BLE Client connected");
+        
+        // Request optimal BLE connection parameters for high-throughput data streaming
+        // Min interval: 6 (7.5ms), Max interval: 12 (15ms), Latency: 0, Timeout: 400 (4s)
+        // This requests the fastest possible connection interval for minimum latency
+        auto peerDevices = pServer->getPeerDevices(true);
+        if (!peerDevices.empty()) {
+            uint16_t connHandle = peerDevices.begin()->first;  // Get connection handle (map key)
+            pServer->updateConnParams(connHandle, 6, 12, 0, 400);
+            Serial.println("[BLE_SLAVE] Requested fast connection interval (7.5-15ms)");
+        }
+        
         // Notify Teensy about BLE connection status
         Serial2.println("BLE_CONNECTED");
         Serial2.flush();
@@ -975,6 +987,7 @@ static inline void send_current_batch() {
     // The data flow check in get_next_sample() already prevents sending when no data
     if (current_sample_count > 0 && deviceConnected) {
         current_ble_packet.sample_count = current_sample_count;
+        // Packet size: 1 (count) + samples
         size_t packet_size = 1 + (current_sample_count * sizeof(CompactLoadCellSample));
         
         try {
@@ -1354,6 +1367,13 @@ void setup() {
     
     // Initialize BLE
     BLEDevice::init("LoadCell_BLE_Server");
+    
+    // Set maximum TX power for best signal quality and range
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);  // +9dBm max power
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);       // Advertising power
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);      // Scan power
+    Serial.println("[BLE_SLAVE] TX power set to maximum (+9dBm)");
+    
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
     

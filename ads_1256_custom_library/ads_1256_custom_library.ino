@@ -137,7 +137,6 @@ struct Stats {
 // Sample buffer for 4 channels
 int32_t sample_buffer[CHANNELS][SAMPLES_PER_FRAME];
 uint8_t buffer_index = 0;
-elapsedMillis tick;
 uint16_t frame_idx = 0;
 
 // Load cell values
@@ -811,7 +810,6 @@ bool start_data_acquisition() {
   // Reset buffer
   buffer_index = 0;
   frame_idx = 0;
-  tick = 0;
 
   current_state = STATE_RUNNING;
   current_led_status = LED_RUNNING;
@@ -1611,24 +1609,16 @@ void loop() {
         current_channel = 0;
         // All 4 channels sampled, increment buffer index
         buffer_index++;
+        
+        // When buffer is full (10 samples collected), send frame immediately
+        // This guarantees every frame contains exactly 10 fresh, sequential samples
         if (buffer_index >= SAMPLES_PER_FRAME) {
           buffer_index = 0;
+          send_frame_to_esp32();
         }
       }
       
       sample_count++;
-    }
-
-    // Send frame every 10ms (100 Hz frame rate) for stable transmission
-    if (tick >= 10) {
-      uint32_t actual_interval = tick;
-      tick = 0;
-      send_frame_to_esp32();
-      
-      // Warn if timing is off by more than 1ms
-      if (actual_interval > 11 || actual_interval < 9) {
-        Serial.printf("[T41] WARNING: Frame interval %lums (expected 10ms)\n", actual_interval);
-      }
     }
 
     // Print statistics every 5 seconds (only when running)
@@ -1655,16 +1645,14 @@ void send_frame_to_esp32() {
   tx.t0_us = micros();
 
   // Pack 10 samples from each of the 4 channels into the frame
+  // Since we send immediately when buffer is full, samples 0-9 are always fresh and in order
   uint8_t* s = tx.samples;
   for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
-    // Get the sample index (most recent samples first)
-    int sample_idx = (buffer_index - SAMPLES_PER_FRAME + i + SAMPLES_PER_FRAME) % SAMPLES_PER_FRAME;
-    
     // Pack 4 channels × 3 bytes each (24-bit little-endian)
-    pack_int24_le(s + 0,  sample_buffer[0][sample_idx]); // LC1
-    pack_int24_le(s + 3,  sample_buffer[1][sample_idx]); // LC2
-    pack_int24_le(s + 6,  sample_buffer[2][sample_idx]); // LC3
-    pack_int24_le(s + 9,  sample_buffer[3][sample_idx]); // LC4
+    pack_int24_le(s + 0,  sample_buffer[0][i]); // LC1
+    pack_int24_le(s + 3,  sample_buffer[1][i]); // LC2
+    pack_int24_le(s + 6,  sample_buffer[2][i]); // LC3
+    pack_int24_le(s + 9,  sample_buffer[3][i]); // LC4
     s += (CHANNELS * 3); // 4ch × 3 bytes = 12 bytes per sample
   }
 
