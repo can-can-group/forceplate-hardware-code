@@ -133,7 +133,7 @@ static volatile bool timer_sample_ready = false;
 static volatile unsigned long timer_interrupts_count = 0;
 
 // Packet rate control
-static int packet_rate_counter = 0;
+// Removed: packet_rate_counter - now only send full 10-sample packets
 
 // Data flow tracking
 static unsigned long last_data_received_ms = 0;
@@ -959,10 +959,10 @@ static inline void create_8channel_sample() {
         current_sample_count++;
     }
     
-    packet_rate_counter++;
-    if (current_sample_count >= SAMPLES_PER_BLE_PACKET || packet_rate_counter >= 10) {
+    // Only send when we have a FULL batch of 10 samples
+    // This ensures consistent packet sizes for reliable BLE transfer
+    if (current_sample_count >= SAMPLES_PER_BLE_PACKET) {
         send_current_batch();
-        packet_rate_counter = 0;
     }
 }
 
@@ -1148,16 +1148,34 @@ static void timer_processing_task(void* param) {
 }
 
 static void ble_tx_task(void* param) {
+    // This task only handles cleanup when data flow stops
+    // Normal packet sending is done in create_8channel_sample() when batch is full
+    static unsigned long last_sample_count = 0;
+    static unsigned long stale_count = 0;
+    
     while (true) {
         if (deviceConnected) {
+            // Only flush if samples have been pending for too long (data flow stopped)
             if (current_sample_count > 0) {
-                vTaskDelay(pdMS_TO_TICKS(5));
-                if (current_sample_count > 0) {
-                    send_current_batch();
+                if (current_sample_count == last_sample_count) {
+                    stale_count++;
+                    // If samples haven't changed for 100ms (10 iterations), flush them
+                    if (stale_count >= 10) {
+                        send_current_batch();
+                        stale_count = 0;
+                    }
+                } else {
+                    stale_count = 0;
                 }
+                last_sample_count = current_sample_count;
+            } else {
+                stale_count = 0;
+                last_sample_count = 0;
             }
         } else {
             current_sample_count = 0;
+            stale_count = 0;
+            last_sample_count = 0;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
