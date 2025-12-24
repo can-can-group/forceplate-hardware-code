@@ -660,10 +660,17 @@ static void handle_serial_commands() {
 }
 
 static void process_command(String command) {
-    // Local Teensy control commands
-    if (command == "START" || command == "STOP" || command == "RESTART" || command == "RESET" ||
-        command == "LED_ON" || command == "LED_OFF" ||
-        command == "MOCK_ON" || command == "MOCK_OFF") {
+    // Local Teensy control commands (with optional LOCAL_ prefix)
+    // Handle LOCAL_* commands by stripping prefix
+    String local_cmd = command;
+    if (command.startsWith("LOCAL_") && !command.startsWith("LOCAL_PING") && !command.startsWith("LOCAL_CAL_") && !command.startsWith("LOCAL_STATUS")) {
+        local_cmd = command.substring(6); // Remove "LOCAL_" prefix
+    }
+    
+    if (local_cmd == "START" || local_cmd == "STOP" || local_cmd == "RESTART" || local_cmd == "RESET" ||
+        local_cmd == "LED_ON" || local_cmd == "LED_OFF" ||
+        local_cmd == "MOCK_ON" || local_cmd == "MOCK_OFF") {
+        command = local_cmd; // Use stripped command
             Serial.printf("[RX_RADIO] Forwarding '%s' to Local Teensy...\n", command.c_str());
             
             Serial1.println(command);

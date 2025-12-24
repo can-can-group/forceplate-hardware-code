@@ -482,18 +482,21 @@ static void parse_status_response(const String& response, String& state, String&
     }
 }
 
-// Send combined STATUS JSON response
+// Send combined STATUS JSON response (includes status, battery, and key stats)
 static void send_status_json_response(unsigned long ms) {
-    char json[350];
+    unsigned long uptime_sec = millis() / 1000;
+    char json[512];
     snprintf(json, sizeof(json), 
         "{\"target\":\"BLE\",\"cmd\":\"STATUS\",\"ok\":true,"
-        "\"local\":{\"state\":\"%s\",\"led\":\"%s\"},"
-        "\"remote\":{\"state\":\"%s\",\"led\":\"%s\"},"
-        "\"ble\":\"%s\",\"ms\":%lu}",
+        "\"local\":{\"state\":\"%s\",\"led\":\"%s\",\"bat\":{\"v\":%.2f,\"pct\":%.1f}},"
+        "\"remote\":{\"state\":\"%s\",\"led\":\"%s\",\"bat\":{\"v\":%.2f,\"pct\":%.1f}},"
+        "\"ble\":\"%s\",\"uptime\":%lu,\"ms\":%lu}",
         status_local_state.c_str(), status_local_led.c_str(),
+        battery_local_voltage, battery_local_soc,
         status_remote_state.c_str(), status_remote_led.c_str(),
+        battery_remote_voltage, battery_remote_soc,
         deviceConnected ? "CONNECTED" : "DISCONNECTED",
-        ms);
+        uptime_sec, ms);
     send_ble_json_response(json);
 }
 
@@ -747,7 +750,8 @@ static void process_ble_command(String command) {
     }
 
     // Valid commands to forward to ESP32 RX Radio
-    if (command == "START" || command == "STOP" || command == "RESTART" || command == "RESET" ||
+    // All commands use consistent prefixes: LOCAL_*, REMOTE_*, ALL_*
+    if (command == "LOCAL_START" || command == "LOCAL_STOP" || command == "LOCAL_RESTART" || command == "LOCAL_RESET" ||
         command == "REMOTE_START" || command == "REMOTE_STOP" || command == "REMOTE_RESTART" || command == "REMOTE_RESET" ||
         command == "ALL_START" || command == "ALL_STOP" || command == "ALL_RESTART" || command == "ALL_RESET" ||
         command == "LOCAL_PING" || command == "REMOTE_PING" ||

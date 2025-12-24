@@ -83,19 +83,20 @@ All command responses are JSON objects with these fields:
 {"target":"LOCAL","cmd":"ADD","ok":true,"ms":850}
 
 // Control command
-{"target":"LOCAL","cmd":"START","ok":true,"ms":120}
+{"target":"LOCAL","cmd":"START","ok":true,"ms":120}  // Response to LOCAL_START
 
 // LED control commands
 {"target":"LOCAL","cmd":"LED_ON","ok":true,"ms":45}
-{"target":"REMOTE","cmd":"LED_OFF","ok":true,"ms":52}
-{"target":"ALL","cmd":"LED_ON","ok":true,"ms":48}
+{"target":"ALL","cmd":"LED_OFF","ok":true,"ms":48}
 
 // Mock data commands
 {"target":"LOCAL","cmd":"MOCK_ON","ok":true,"ms":42}
-{"target":"REMOTE","cmd":"MOCK_OFF","ok":true,"ms":48}
-{"target":"ALL","cmd":"MOCK_ON","ok":true,"ms":45}
+{"target":"ALL","cmd":"MOCK_OFF","ok":true,"ms":45}
 
-// BAT - battery status
+// STATUS - comprehensive system status
+{"target":"BLE","cmd":"STATUS","ok":true,"local":{"state":"RUNNING","led":"ON","bat":{"v":4.12,"pct":85.0}},"remote":{"state":"RUNNING","led":"ON","bat":{"v":3.98,"pct":72.0}},"ble":"CONNECTED","uptime":3600,"ms":245}
+
+// BAT - battery only
 {"target":"BLE","cmd":"BAT","ok":true,"local":{"v":4.12,"pct":85.0},"remote":{"v":3.98,"pct":72.0},"ms":0}
 ```
 
@@ -137,40 +138,34 @@ Bytes 1-160:   samples[sample_count]
 
 | Command | Description |
 |---------|-------------|
-| `START` | Start local data acquisition |
-| `STOP` | Stop local data acquisition |
-| `RESTART` | Restart local Teensy |
-| `RESET` | Reset local Teensy |
+| `LOCAL_START` | Start local data acquisition |
+| `LOCAL_STOP` | Stop local data acquisition |
+| `LOCAL_RESTART` | Restart local Teensy |
+| `LOCAL_RESET` | Reset local Teensy |
 | `REMOTE_START` | Start remote data acquisition |
 | `REMOTE_STOP` | Stop remote data acquisition |
 | `REMOTE_RESTART` | Restart remote Teensy |
 | `REMOTE_RESET` | Reset remote Teensy |
-| `ALL_START` | Start both |
-| `ALL_STOP` | Stop both |
+| `ALL_START` | Start both Teensys |
+| `ALL_STOP` | Stop both Teensys |
+| `ALL_RESTART` | Restart both Teensys |
+| `ALL_RESET` | Reset both Teensys |
 
 ### LED Control Commands
 
-| Command | Description | Response |
-|---------|-------------|----------|
-| `LOCAL_LED_ON` | Turn on LEDs on local Teensy | `{"target":"LOCAL","cmd":"LED_ON","ok":true,"ms":XX}` |
-| `LOCAL_LED_OFF` | Turn off LEDs on local Teensy | `{"target":"LOCAL","cmd":"LED_OFF","ok":true,"ms":XX}` |
-| `REMOTE_LED_ON` | Turn on LEDs on remote Teensy | `{"target":"REMOTE","cmd":"LED_ON","ok":true,"ms":XX}` |
-| `REMOTE_LED_OFF` | Turn off LEDs on remote Teensy | `{"target":"REMOTE","cmd":"LED_OFF","ok":true,"ms":XX}` |
-| `ALL_LED_ON` | Turn on LEDs on both Teensy devices | `{"target":"ALL","cmd":"LED_ON","ok":true,"ms":XX}` |
-| `ALL_LED_OFF` | Turn off LEDs on both Teensy devices | `{"target":"ALL","cmd":"LED_OFF","ok":true,"ms":XX}` |
+| Command | Description |
+|---------|-------------|
+| `ALL_LED_ON` | Turn on LEDs on both Teensy devices |
+| `ALL_LED_OFF` | Turn off LEDs on both Teensy devices |
 
-**Note:** LED commands control the WS2812 RGB LEDs on each Teensy device. When LEDs are enabled, they display status information (idle, running, calibration, etc.). When disabled, all LEDs are turned off.
+**Note:** LED commands control the WS2812 RGB LEDs on each Teensy device. When LEDs are enabled, they display status information (idle, running, calibration, etc.). When disabled, all LEDs are turned off. LEDs do not animate during data acquisition to maintain precise 1000 Hz sampling.
 
 ### Mock Data Commands
 
-| Command | Description | Response |
-|---------|-------------|----------|
-| `LOCAL_MOCK_ON` | Enable mock data generation on local Teensy | `{"target":"LOCAL","cmd":"MOCK_ON","ok":true,"ms":XX}` |
-| `LOCAL_MOCK_OFF` | Disable mock data generation on local Teensy | `{"target":"LOCAL","cmd":"MOCK_OFF","ok":true,"ms":XX}` |
-| `REMOTE_MOCK_ON` | Enable mock data generation on remote Teensy | `{"target":"REMOTE","cmd":"MOCK_ON","ok":true,"ms":XX}` |
-| `REMOTE_MOCK_OFF` | Disable mock data generation on remote Teensy | `{"target":"REMOTE","cmd":"MOCK_OFF","ok":true,"ms":XX}` |
-| `ALL_MOCK_ON` | Enable mock data generation on both Teensy devices | `{"target":"ALL","cmd":"MOCK_ON","ok":true,"ms":XX}` |
-| `ALL_MOCK_OFF` | Disable mock data generation on both Teensy devices | `{"target":"ALL","cmd":"MOCK_OFF","ok":true,"ms":XX}` |
+| Command | Description |
+|---------|-------------|
+| `ALL_MOCK_ON` | Enable mock data generation on both Teensy devices |
+| `ALL_MOCK_OFF` | Disable mock data generation on both Teensy devices |
 
 **Note:** Mock data generation replaces physical load cell readings with synthetic waveforms for testing data rates and connection reliability without requiring physical hardware. When enabled, LEDs display inverted colors (yellow/orange instead of pink/blue) to indicate mock data mode.
 
@@ -194,37 +189,54 @@ Bytes 1-160:   samples[sample_count]
 | `LOCAL_CAL_POINTS` | Show point counts |
 | `REMOTE_CAL_*` | Same commands for remote Teensy |
 
-### Statistics Commands
+### Status Command
 
 | Command | Description |
 |---------|-------------|
-| `STATS` | Show BLE Slave statistics |
-| `RESET_STATS` | Reset statistics counters |
+| `STATUS` | Get comprehensive system status (state, LEDs, battery, uptime) |
 
-### Battery Command
-
-| Command | Description |
-|---------|-------------|
-| `BAT` | Get battery status for both local and remote batteries |
-
-**BAT Response Format:**
+**STATUS Response Format:**
 ```json
 {
   "target": "BLE",
-  "cmd": "BAT",
+  "cmd": "STATUS",
   "ok": true,
-  "local": {"v": 4.12, "pct": 85.0},
-  "remote": {"v": 3.98, "pct": 72.0},
-  "ms": 0
+  "local": {
+    "state": "RUNNING",
+    "led": "ON",
+    "bat": {"v": 4.12, "pct": 85.0}
+  },
+  "remote": {
+    "state": "RUNNING",
+    "led": "ON", 
+    "bat": {"v": 3.98, "pct": 72.0}
+  },
+  "ble": "CONNECTED",
+  "uptime": 3600,
+  "ms": 245
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `local.v` | Local battery voltage (V) |
-| `local.pct` | Local battery percentage (0-100%) |
-| `remote.v` | Remote battery voltage (V) |
-| `remote.pct` | Remote battery percentage (0-100%) |
+| `local.state` | Local Teensy acquisition state (`RUNNING`, `STOPPED`, `UNKNOWN`) |
+| `local.led` | Local LED status (`ON`, `OFF`, `UNKNOWN`) |
+| `local.bat.v` | Local battery voltage (V) |
+| `local.bat.pct` | Local battery percentage (0-100%) |
+| `remote.state` | Remote Teensy acquisition state |
+| `remote.led` | Remote LED status |
+| `remote.bat.v` | Remote battery voltage (V) |
+| `remote.bat.pct` | Remote battery percentage (0-100%) |
+| `ble` | BLE connection status (`CONNECTED`, `DISCONNECTED`) |
+| `uptime` | System uptime in seconds |
+| `ms` | Round-trip time for status queries (milliseconds) |
+
+### Other Commands
+
+| Command | Description |
+|---------|-------------|
+| `BAT` | Get battery status only (subset of STATUS) |
+| `HELP` | Show available commands (printed to Serial) |
 
 ---
 
