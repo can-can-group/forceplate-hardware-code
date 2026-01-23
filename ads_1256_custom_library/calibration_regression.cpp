@@ -5,14 +5,14 @@
 
 // External ADC read helpers from existing sketch
 extern int32_t read_single_channel_fast(uint8_t channel);
-extern int32_t get_filtered_load_cell_reading(uint8_t channel);
+extern int32_t get_raw_filtered_reading(uint8_t channel);  // Filtered but NO tare/polarity
 
 // External LED update function (defined in main .ino file)
 extern void update_led_status();
 
 // ---------------- Storage ----------------
 static const uint32_t CAL_MAGIC   = 0xCA1BCA1Bu;
-static const uint16_t CAL_VERSION = 0x0003u; // per-cell regression (no total fit)
+static const uint16_t CAL_VERSION = 0x0004u; // v4: added polarity auto-detection
 static const int      CAL_EEPROM_ADDR = 0;
 
 // Keep everything fixed-size: no heap allocations.
@@ -29,6 +29,10 @@ struct CalBlob {
 
   // Per-channel scale only: y = a*x, x is |delta_counts[ch]|
   float ch_a_10g_per_count[CHANNELS];
+
+  // Per-channel polarity: +1 = normal, -1 = inverted wiring
+  // Auto-detected during CAL_ADD based on signal direction
+  int8_t polarity[CHANNELS];
 
   uint8_t points_ch_n[CHANNELS];
 #if (CHANNELS % 4) != 0
@@ -74,6 +78,7 @@ static void cal_defaults() {
   for (int i = 0; i < CHANNELS; i++) {
     g_cal.ch_a_10g_per_count[i] = 0.0f;
     g_cal.points_ch_n[i] = 0;
+    g_cal.polarity[i] = 1;  // Default: normal polarity (+1)
   }
   g_cal.crc32 = cal_crc(g_cal);
 }
@@ -127,7 +132,9 @@ struct CaptureStats {
 };
 
 static int32_t read_counts(uint8_t ch, bool use_filtered) {
-  return use_filtered ? get_filtered_load_cell_reading(ch) : read_single_channel_fast(ch);
+  // Use get_raw_filtered_reading() which applies filtering but NOT tare offset or polarity
+  // This is essential for calibration to work correctly
+  return use_filtered ? get_raw_filtered_reading(ch) : read_single_channel_fast(ch);
 }
 
 static bool capture_window(uint32_t window_ms, bool use_filtered, CaptureStats* out) {
@@ -239,6 +246,14 @@ bool cal_add_point_total(float known_kg, uint32_t window_ms, bool use_filtered) 
       continue;
     }
 
+    // Auto-detect polarity: if delta is negative, the load cell is wired in reverse
+    // Only update polarity if we have a significant signal (> 1000 counts)
+    if (ad > 1000.0) {
+      g_cal.polarity[ch] = (d < 0) ? -1 : 1;
+      Serial.printf("[CAL] LC%d polarity auto-detected: %s\n", 
+                    ch + 1, (d < 0) ? "INVERTED" : "NORMAL");
+    }
+
     delta[ch] = ad;
     sum_delta += ad;
   }
@@ -267,10 +282,19 @@ bool cal_add_point_channel(uint8_t ch, float known_kg, uint32_t window_ms, bool 
   if (!capture_window(window_ms, use_filtered, &s)) return false;
 
   const double d = (double)s.mean[ch] - (double)g_cal.offsets[ch];
-  if (fabs(d) < 1.0) return false;
+  const double ad = fabs(d);
+  if (ad < 1.0) return false;
+
+  // Auto-detect polarity: if delta is negative, the load cell is wired in reverse
+  // Only update polarity if we have a significant signal (> 1000 counts)
+  if (ad > 1000.0) {
+    g_cal.polarity[ch] = (d < 0) ? -1 : 1;
+    Serial.printf("[CAL] LC%d polarity auto-detected: %s\n", 
+                  ch + 1, (d < 0) ? "INVERTED" : "NORMAL");
+  }
 
   const float y10g = known_kg * 100.0f;
-  g_cal.points_ch[ch][g_cal.points_ch_n[ch]++] = CalPoint{ (float)d, y10g };
+  g_cal.points_ch[ch][g_cal.points_ch_n[ch]++] = CalPoint{ (float)ad, y10g };
   g_dirty = true;
   return true;
 }
@@ -315,12 +339,13 @@ int32_t cal_read_total_10g_units(bool use_filtered) {
 
 void cal_print_status() {
   if (!g_loaded) cal_load_internal();
-  Serial.println("[CAL] ===== Calibration regression v2 =====");
+  Serial.println("[CAL] ===== Calibration regression v3 (with polarity) =====");
   for (int ch = 0; ch < CHANNELS; ch++) {
-    Serial.printf("[CAL] LC%d offset=%ld ch_fit(a=%.9f) points=%u\n",
+    Serial.printf("[CAL] LC%d offset=%ld a=%.9f pts=%u pol=%s\n",
                   ch+1, (long)g_cal.offsets[ch],
                   (double)g_cal.ch_a_10g_per_count[ch],
-                  (unsigned)g_cal.points_ch_n[ch]);
+                  (unsigned)g_cal.points_ch_n[ch],
+                  g_cal.polarity[ch] < 0 ? "INV" : "NRM");
   }
   Serial.println("[CAL] Units: 10g (0.01kg). 1kg = 100 units.");
 }
@@ -352,7 +377,23 @@ void cal_get_status(CalStatus* out) {
     out->offsets[ch] = g_cal.offsets[ch];
     out->ch_a_10g_per_count[ch] = g_cal.ch_a_10g_per_count[ch];
     out->points_ch_n[ch] = g_cal.points_ch_n[ch];
+    out->polarity[ch] = g_cal.polarity[ch];
   }
+}
+
+// Get polarity for a single channel (used by streaming functions)
+int8_t cal_get_polarity(uint8_t ch) {
+  if (!g_loaded) cal_load_internal();
+  if (ch >= CHANNELS) return 1;
+  return g_cal.polarity[ch];
+}
+
+// Get calibration slope for a single channel (used by streaming functions)
+// Returns the slope 'a' such that: weight_10g = delta_counts * a
+float cal_get_slope(uint8_t ch) {
+  if (!g_loaded) cal_load_internal();
+  if (ch >= CHANNELS) return 0.0f;
+  return g_cal.ch_a_10g_per_count[ch];
 }
 
 bool cal_get_points(uint8_t ch, CalPoint* out_points, uint8_t max_points, uint8_t* out_count) {

@@ -583,7 +583,51 @@ void set_gaussian_sigma(double sigma) {
 // INTEGRATION WITH EXISTING SYSTEM
 // ============================================================================
 
+// Tare offset application flag - when true, streamed values are tare-corrected
+static bool apply_tare_offset_to_stream = true;
+
+// External calibration accessors (defined in calibration_regression.cpp)
+extern void cal_get_status(CalStatus* out);
+extern int8_t cal_get_polarity(uint8_t ch);
+extern float cal_get_slope(uint8_t ch);
+
+// Get the tare offset for a channel from calibration system
+static int32_t get_tare_offset(uint8_t channel) {
+  if (channel >= 4) return 0;
+  
+  CalStatus status;
+  cal_get_status(&status);
+  return status.offsets[channel];
+}
+
+// Control whether tare offset is applied to streaming data
+void set_tare_offset_enabled(bool enable) {
+  apply_tare_offset_to_stream = enable;
+  Serial.printf("[FILTER] Tare offset application: %s\n", enable ? "ENABLED" : "DISABLED");
+}
+
+bool is_tare_offset_enabled() {
+  return apply_tare_offset_to_stream;
+}
+
+// Get RAW filtered reading WITHOUT tare offset or polarity correction
+// This is used by calibration functions that need raw ADC values with optional filtering
+int32_t get_raw_filtered_reading(uint8_t channel) {
+  if (channel >= 4) return 0;
+  
+  // Get raw reading from actual hardware
+  int32_t raw_value = read_single_channel_fast(channel);
+  
+  // Apply filtering only (NO tare offset, NO polarity correction)
+  double filtered_value = apply_noise_filter(raw_value, channel);
+  
+  return (int32_t)filtered_value;
+}
+
 // Modified function to apply filtering to load cell readings
+// Now also subtracts tare offset and applies polarity correction
+// so all channels show positive values when weight is applied
+// Returns: tare/polarity corrected delta counts (NOT calibrated weight)
 int32_t get_filtered_load_cell_reading(uint8_t channel) {
   if (channel >= 4) return 0;
   
@@ -602,11 +646,66 @@ int32_t get_filtered_load_cell_reading(uint8_t channel) {
   // Apply filtering
   double filtered_value = apply_noise_filter(raw_value, channel);
   
+  // Apply tare offset to get values near zero after calibration
+  // This ensures streamed data reflects tare-corrected readings
+  if (apply_tare_offset_to_stream) {
+    int32_t offset = get_tare_offset(channel);
+    filtered_value -= (double)offset;
+    
+    // Apply polarity correction (auto-detected during CAL_ADD)
+    // This ensures all channels show positive values when weight is applied
+    int8_t polarity = cal_get_polarity(channel);
+    filtered_value *= (double)polarity;
+  }
+  
   return (int32_t)filtered_value;
+}
+
+// Get CALIBRATED load cell reading in 10g units (1 kg = 100 units)
+// This applies the calibration slope to convert delta counts to actual weight
+// Returns: weight in 10g units, clamped to int16 range for BLE streaming
+int32_t get_calibrated_load_cell_reading(uint8_t channel) {
+  if (channel >= 4) return 0;
+  
+  // Get tare/polarity corrected delta counts
+  int32_t delta_counts = get_filtered_load_cell_reading(channel);
+  
+  // Apply calibration slope to convert counts to 10g units
+  // slope 'a' is calculated during CAL_ADD such that: weight_10g = |delta_counts| * a
+  float slope = cal_get_slope(channel);
+  
+  int32_t weight_10g;
+  
+  // If not calibrated yet (slope = 0), scale down raw counts to fit in int16 range
+  if (slope <= 0.0f || slope > 1.0f) {
+    // Slope should be a small positive number (typically 0.001 to 0.1)
+    // If it's 0, negative, or > 1, calibration is invalid - use fallback scaling
+    // Scale raw counts to roughly fit in int16 range for 100kg max total
+    // Typical raw delta for full load might be ~500,000 counts
+    // We want ~10,000 units max (100kg), so divide by ~50
+    weight_10g = delta_counts / 50;
+  } else {
+    // Apply calibration: weight_10g = |delta_counts| * slope
+    // Note: delta_counts is already polarity-corrected, so it should be positive when loaded
+    // We use fabs just in case there's any residual negative from noise
+    weight_10g = (int32_t)lroundf(fabs((float)delta_counts) * slope);
+  }
+  
+  // Clamp to int16 range to prevent overflow in BLE transmission
+  // Max expected: 100kg = 10,000 units, well within int16 range
+  // If we're hitting this clamp, calibration is likely incorrect
+  if (weight_10g > 32767) {
+    weight_10g = 32767;
+  } else if (weight_10g < -32768) {
+    weight_10g = -32768;
+  }
+  
+  return weight_10g;
 }
 
 // Get both raw and filtered values for comparison
 // FilteredReading structure is defined in main file
+// Note: raw value is the ADC reading, filtered value has tare offset and polarity applied
 
 FilteredReading get_filtered_reading_with_info(uint8_t channel) {
   FilteredReading result = {0, 0, false};
@@ -620,7 +719,19 @@ FilteredReading get_filtered_reading_with_info(uint8_t channel) {
   result.outlier_detected = detect_outlier(result.raw, channel, current_filter_config);
   
   // Apply filtering
-  result.filtered = (int32_t)apply_noise_filter(result.raw, channel);
+  double filtered_value = apply_noise_filter(result.raw, channel);
+  
+  // Apply tare offset and polarity to filtered value for consistency with streaming
+  if (apply_tare_offset_to_stream) {
+    int32_t offset = get_tare_offset(channel);
+    filtered_value -= (double)offset;
+    
+    // Apply polarity correction (auto-detected during CAL_ADD)
+    int8_t polarity = cal_get_polarity(channel);
+    filtered_value *= (double)polarity;
+  }
+  
+  result.filtered = (int32_t)filtered_value;
   
   return result;
 }

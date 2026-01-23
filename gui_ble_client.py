@@ -664,7 +664,7 @@ class App(tk.Tk):
         holder.pack(fill="both", expand=True, padx=10, pady=6)
 
         # Left: Raw values table
-        left = ttk.LabelFrame(holder, text="Raw Values (latest int16)")
+        left = ttk.LabelFrame(holder, text="Calibrated Values (10g units)")
         left.pack(side="left", fill="y", padx=6, pady=6)
 
         self.val_labels = []
@@ -675,6 +675,39 @@ class App(tk.Tk):
             lbl = ttk.Label(row, text="0", width=12)
             lbl.pack(side="left")
             self.val_labels.append(lbl)
+        
+        # Separator
+        ttk.Separator(left, orient="horizontal").pack(fill="x", padx=6, pady=8)
+        
+        # Local Sum (L1+L2+L3+L4)
+        local_sum_row = ttk.Frame(left)
+        local_sum_row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(local_sum_row, text="Local:", width=6, font=("TkDefaultFont", 9, "bold")).pack(side="left")
+        self.local_sum_label = ttk.Label(local_sum_row, text="0", width=12, font=("TkDefaultFont", 9, "bold"))
+        self.local_sum_label.pack(side="left")
+        self.local_kg_label = ttk.Label(local_sum_row, text="(0.00 kg)", width=12)
+        self.local_kg_label.pack(side="left")
+        
+        # Remote Sum (R5+R6+R7+R8)
+        remote_sum_row = ttk.Frame(left)
+        remote_sum_row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(remote_sum_row, text="Remote:", width=6, font=("TkDefaultFont", 9, "bold")).pack(side="left")
+        self.remote_sum_label = ttk.Label(remote_sum_row, text="0", width=12, font=("TkDefaultFont", 9, "bold"))
+        self.remote_sum_label.pack(side="left")
+        self.remote_kg_label = ttk.Label(remote_sum_row, text="(0.00 kg)", width=12)
+        self.remote_kg_label.pack(side="left")
+        
+        # Separator
+        ttk.Separator(left, orient="horizontal").pack(fill="x", padx=6, pady=8)
+        
+        # Total Sum (all 8 channels)
+        total_sum_row = ttk.Frame(left)
+        total_sum_row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(total_sum_row, text="TOTAL:", width=6, font=("TkDefaultFont", 10, "bold")).pack(side="left")
+        self.total_sum_label = ttk.Label(total_sum_row, text="0", width=12, font=("TkDefaultFont", 10, "bold"), foreground="blue")
+        self.total_sum_label.pack(side="left")
+        self.total_kg_label = ttk.Label(total_sum_row, text="(0.00 kg)", width=12, font=("TkDefaultFont", 10, "bold"), foreground="blue")
+        self.total_kg_label.pack(side="left")
 
         # Right: Plot
         right = ttk.LabelFrame(holder, text="Live Plot")
@@ -806,6 +839,22 @@ class App(tk.Tk):
         # update raw values panel
         for ch in range(8):
             self.val_labels[ch].configure(text=str(self.latest_vals[ch]))
+        
+        # Update sum labels
+        # Local sum (L1+L2+L3+L4 = channels 0-3)
+        local_sum = sum(self.latest_vals[0:4])
+        self.local_sum_label.configure(text=str(local_sum))
+        self.local_kg_label.configure(text=f"({local_sum / 100:.2f} kg)")
+        
+        # Remote sum (R5+R6+R7+R8 = channels 4-7)
+        remote_sum = sum(self.latest_vals[4:8])
+        self.remote_sum_label.configure(text=str(remote_sum))
+        self.remote_kg_label.configure(text=f"({remote_sum / 100:.2f} kg)")
+        
+        # Total sum (all 8 channels)
+        total_sum = local_sum + remote_sum
+        self.total_sum_label.configure(text=str(total_sum))
+        self.total_kg_label.configure(text=f"({total_sum / 100:.2f} kg)")
 
     def _update_plot(self):
         try:

@@ -45,8 +45,17 @@ struct CalStatus {
   int32_t offsets[CHANNELS];
   float ch_a_10g_per_count[CHANNELS];
   uint8_t points_ch_n[CHANNELS];
+  int8_t polarity[CHANNELS];  // +1 = normal, -1 = inverted wiring (auto-detected)
 };
 void cal_get_status(CalStatus* out);
 bool cal_get_points(uint8_t ch, CalPoint* out_points, uint8_t max_points, uint8_t* out_count);
+
+// Get polarity for a single channel (used by streaming functions)
+// Returns +1 for normal wiring, -1 for inverted wiring
+int8_t cal_get_polarity(uint8_t ch);
+
+// Get calibration slope for a single channel (used by streaming functions)
+// Returns the slope 'a' such that: weight_10g = delta_counts * a
+float cal_get_slope(uint8_t ch);
 
 

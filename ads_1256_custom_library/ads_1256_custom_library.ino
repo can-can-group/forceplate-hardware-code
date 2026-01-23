@@ -304,7 +304,9 @@ struct ChannelFilter {
 
 // Forward declarations for noise filtering functions (defined in noise_filtering.ino)
 // Note: channel_filters[] is defined in noise_filtering.ino
-int32_t get_filtered_load_cell_reading(uint8_t channel);
+int32_t get_filtered_load_cell_reading(uint8_t channel);     // With tare offset + polarity (delta counts)
+int32_t get_raw_filtered_reading(uint8_t channel);           // Raw filtered, NO tare/polarity (for calibration)
+int32_t get_calibrated_load_cell_reading(uint8_t channel);   // Calibrated weight in 10g units (for streaming)
 FilteredReading get_filtered_reading_with_info(uint8_t channel);
 void enable_filtering(bool enable);
 void reset_filters();
@@ -316,6 +318,8 @@ void set_filter_type(int type);
 void set_outlier_method(int method);
 void set_gaussian_sigma(double sigma);
 void show_filter_status();
+void set_tare_offset_enabled(bool enable);
+bool is_tare_offset_enabled();
 
 // ============================================================================
 // SOFTWARE SERIAL TX ON PIN 16 (PCB has TX wired to Pin 16, not Pin 14)
@@ -981,6 +985,15 @@ void handle_esp32_commands() {
       set_low_noise_filtering();
       send_status_response("FILTER_LOW_NOISE", "OK");
     }
+    // ========== TARE OFFSET CONTROL ==========
+    else if (command == "TARE_OFFSET_ON") {
+      set_tare_offset_enabled(true);
+      send_status_response("TARE_OFFSET_ON", "OK");
+    }
+    else if (command == "TARE_OFFSET_OFF") {
+      set_tare_offset_enabled(false);
+      send_status_response("TARE_OFFSET_OFF", "OK");
+    }
     else if (command == "PING") {
       // Simple ping-pong test for communication chain verification
       Serial.println("[T41] PING received, sending PONG via Software TX (Pin 16)...");
@@ -1241,6 +1254,23 @@ void handle_serial_monitor_commands() {
       set_low_noise_filtering();
       Serial.println("[T41] ✓ Low-noise filtering preset applied");
     }
+    // ========== TARE OFFSET CONTROL ==========
+    else if (command == "TARE_OFFSET_ON") {
+      set_tare_offset_enabled(true);
+      Serial.println("[T41] ✓ Tare offset applied to stream (values near 0 after tare)");
+    }
+    else if (command == "TARE_OFFSET_OFF") {
+      set_tare_offset_enabled(false);
+      Serial.println("[T41] ✓ Tare offset disabled (raw ADC values in stream)");
+    }
+    else if (command == "TARE_STATUS") {
+      Serial.printf("[T41] Tare offset in stream: %s\n", is_tare_offset_enabled() ? "ENABLED" : "DISABLED");
+      CalStatus status;
+      cal_get_status(&status);
+      Serial.printf("[T41] Tare offsets: LC1=%ld, LC2=%ld, LC3=%ld, LC4=%ld\n",
+                    (long)status.offsets[0], (long)status.offsets[1], 
+                    (long)status.offsets[2], (long)status.offsets[3]);
+    }
     else if (command.startsWith("FILTER_TYPE ")) {
       int type = command.substring(12).toInt();
       if (type >= 0 && type <= 7) {
@@ -1411,6 +1441,34 @@ void handle_serial_monitor_commands() {
       }
       Serial.println(ok ? "[CAL] FIT OK" : "[CAL] FIT ERROR");
     }
+    else if (command == "CAL DEBUG" || command == "CAL_DEBUG") {
+      // Diagnostic command to debug calibration issues
+      Serial.println("[CAL] ===== CALIBRATION DEBUG =====");
+      CalStatus status;
+      cal_get_status(&status);
+      
+      for (int ch = 0; ch < 4; ch++) {
+        int32_t raw = read_single_channel_fast(ch);
+        int32_t raw_filtered = get_raw_filtered_reading(ch);
+        int32_t delta = get_filtered_load_cell_reading(ch);
+        int32_t calibrated = get_calibrated_load_cell_reading(ch);
+        float slope = cal_get_slope(ch);
+        
+        Serial.printf("[CAL] LC%d:\n", ch + 1);
+        Serial.printf("[CAL]   raw_adc=%ld, raw_filt=%ld\n", (long)raw, (long)raw_filtered);
+        Serial.printf("[CAL]   offset=%ld, delta=%ld\n", (long)status.offsets[ch], (long)delta);
+        Serial.printf("[CAL]   slope=%.9f, polarity=%d\n", (double)slope, (int)status.polarity[ch]);
+        Serial.printf("[CAL]   calibrated_10g=%ld (%.2f kg)\n", (long)calibrated, calibrated / 100.0);
+      }
+      
+      // Sum of calibrated values
+      int32_t total = 0;
+      for (int ch = 0; ch < 4; ch++) {
+        total += get_calibrated_load_cell_reading(ch);
+      }
+      Serial.printf("[CAL] TOTAL: %ld units (%.2f kg)\n", (long)total, total / 100.0);
+      Serial.println("[CAL] ================================");
+    }
     else if (command == "CAL CLEAR" || command == "CAL_CLEAR") {
       bool ok = cal_clear();
       if (ok) {
@@ -1427,8 +1485,9 @@ void handle_serial_monitor_commands() {
       Serial.println("[T41] Filter: FILTER_ENABLE/DISABLE/STATUS/RESET");
       Serial.println("[T41] Presets: FILTER_REALTIME/HIGH_QUALITY/LOW_NOISE/GAUSSIAN");
       Serial.println("[T41] Config: FILTER_TYPE <0-7>, OUTLIER_METHOD <0-4>, GAUSSIAN_SIGMA <0.1-5>");
+      Serial.println("[T41] Tare: TARE_OFFSET_ON/OFF, TARE_STATUS (control tare in stream)");
       Serial.println("[T41] Debug: SHOW_FILTERED, PING, TX_TEST");
-      Serial.println("[T41] Cal: CAL_SHOW, CAL_POINTS, CAL_READ, CAL_READ_RAW, CAL_TARE");
+      Serial.println("[T41] Cal: CAL_SHOW, CAL_POINTS, CAL_READ, CAL_READ_RAW, CAL_TARE, CAL_DEBUG");
       Serial.println("[T41]      CAL_ADD_<kg>, CAL_ADD_CH_<1-4>_<kg>, CAL_FIT, CAL_CLEAR");
       Serial.println("[T41] Mock: MOCK_ON, MOCK_OFF (generate test waveforms)");
     }
@@ -1597,11 +1656,12 @@ void loop() {
     if (sample_timer >= 250) {  // 4kHz total sampling rate
       sample_timer = 0;
       
-      // Read current channel with filtering
-      int32_t filtered_value = get_filtered_load_cell_reading(current_channel);
+      // Read current channel with CALIBRATION applied (10g units)
+      // This gives weight values that fit in int16 and represent actual weight
+      int32_t calibrated_value = get_calibrated_load_cell_reading(current_channel);
       
       // Store in buffer
-      sample_buffer[current_channel][buffer_index] = filtered_value;
+      sample_buffer[current_channel][buffer_index] = calibrated_value;
       
       // Move to next channel
       current_channel++;
