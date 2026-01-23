@@ -5,9 +5,17 @@
 # - Commands + custom command
 # - Raw values (8 channels) live monitor
 # - Live graph for a selected channel (L1..L4, R5..R8)
+# - Center of Pressure (CoP) visualization for force plates
 #
 # Spec: Data notifications contain 1..10 samples/packet, each sample = 8 x int16 LE
 #       Order: local[4], remote[4] => L1..L4, R5..R8
+#
+# Force Plate Geometry (for CoP calculation):
+#   LC1 ----22cm---- LC2
+#    |               |
+#   35cm   CENTER   35cm
+#    |               |
+#   LC4 ----22cm---- LC3
 
 import asyncio
 import struct
@@ -51,6 +59,51 @@ COMMAND_GROUPS = {
 }
 
 CHANNEL_NAMES = ["L1", "L2", "L3", "L4", "R5", "R6", "R7", "R8"]
+
+# Force plate geometry (cm) - used for CoP calculation
+# Layout:
+#   LC1(0) ----WIDTH---- LC2(1)
+#    |                    |
+#   LENGTH    CENTER     LENGTH
+#    |                    |
+#   LC4(3) ----WIDTH---- LC3(2)
+PLATE_WIDTH_CM = 22.0   # Distance LC1-LC2 and LC3-LC4
+PLATE_LENGTH_CM = 35.0  # Distance LC1-LC4 and LC2-LC3
+
+# ===== CoP Calculator =====
+def calculate_cop(f1: float, f2: float, f3: float, f4: float, 
+                  width: float = PLATE_WIDTH_CM, length: float = PLATE_LENGTH_CM):
+    """
+    Calculate Center of Pressure (CoP) from 4 corner load cell readings.
+    
+    Layout (looking down at plate):
+        LC1(f1) ----width---- LC2(f2)
+         |                     |
+        length    CENTER      length
+         |                     |
+        LC4(f4) ----width---- LC3(f3)
+    
+    Origin (0,0) is at center of plate.
+    X-axis: positive = right (toward LC2/LC3)
+    Y-axis: positive = up (toward LC1/LC2)
+    
+    Returns: (cop_x, cop_y, total_force, is_valid)
+    """
+    total = f1 + f2 + f3 + f4
+    
+    # Minimum threshold to avoid division by zero and noise
+    if total < 10:  # Less than 100g total
+        return (0.0, 0.0, total, False)
+    
+    # CoP calculation using moment balance
+    # X: right side (LC2+LC3) vs left side (LC1+LC4)
+    cop_x = (width / 2.0) * ((f2 + f3) - (f1 + f4)) / total
+    
+    # Y: top side (LC1+LC2) vs bottom side (LC4+LC3)
+    cop_y = (length / 2.0) * ((f1 + f2) - (f4 + f3)) / total
+    
+    return (cop_x, cop_y, total, True)
+
 
 # ===== Packet parser =====
 def parse_packet(data: bytes):
@@ -574,6 +627,15 @@ class App(tk.Tk):
 
         # Latest raw values
         self.latest_vals = [0]*8
+        
+        # CoP tracking (disabled by default for performance)
+        self.cop_enabled = tk.BooleanVar(value=False)
+        self.cop_trail_length = 100  # Number of CoP points to show as trail
+        self.local_cop_trail = deque(maxlen=self.cop_trail_length)
+        self.remote_cop_trail = deque(maxlen=self.cop_trail_length)
+        self.latest_local_cop = (0.0, 0.0, 0.0, False)  # (x, y, force, valid)
+        self.latest_remote_cop = (0.0, 0.0, 0.0, False)
+        self.cop_panel = None  # Will be created when enabled
 
         # Selected channel
         self.selected_channel = tk.StringVar(value=CHANNEL_NAMES[0])  # default L1
@@ -708,10 +770,49 @@ class App(tk.Tk):
         self.total_sum_label.pack(side="left")
         self.total_kg_label = ttk.Label(total_sum_row, text="(0.00 kg)", width=12, font=("TkDefaultFont", 10, "bold"), foreground="blue")
         self.total_kg_label.pack(side="left")
+        
+        # Separator
+        ttk.Separator(left, orient="horizontal").pack(fill="x", padx=6, pady=8)
+        
+        # CoP toggle and coordinates display
+        cop_toggle_frame = ttk.Frame(left)
+        cop_toggle_frame.pack(fill="x", padx=6, pady=4)
+        ttk.Checkbutton(cop_toggle_frame, text="Enable CoP Chart", 
+                       variable=self.cop_enabled, 
+                       command=self._toggle_cop_panel).pack(side="left")
+        
+        # CoP coordinates (always shown when CoP enabled)
+        self.cop_info_frame = ttk.LabelFrame(left, text="Center of Pressure")
+        
+        # Local CoP
+        local_cop_row = ttk.Frame(self.cop_info_frame)
+        local_cop_row.pack(fill="x", padx=4, pady=2)
+        ttk.Label(local_cop_row, text="Local:", width=6).pack(side="left")
+        self.local_cop_label = ttk.Label(local_cop_row, text="X: 0.0, Y: 0.0 cm", width=20)
+        self.local_cop_label.pack(side="left")
+        
+        # Remote CoP
+        remote_cop_row = ttk.Frame(self.cop_info_frame)
+        remote_cop_row.pack(fill="x", padx=4, pady=2)
+        ttk.Label(remote_cop_row, text="Remote:", width=6).pack(side="left")
+        self.remote_cop_label = ttk.Label(remote_cop_row, text="X: 0.0, Y: 0.0 cm", width=20)
+        self.remote_cop_label.pack(side="left")
+        
+        # Store reference to holder for CoP panel
+        self.plot_holder = holder
+        
+        # CoP panel variables (created on demand)
+        self.show_local_cop = tk.BooleanVar(value=True)
+        self.show_remote_cop = tk.BooleanVar(value=True)
+        self.show_cop_trail = tk.BooleanVar(value=True)
+        self.cop_fig = None
+        self.cop_ax = None
+        self.cop_canvas = None
 
-        # Right: Plot
-        right = ttk.LabelFrame(holder, text="Live Plot")
-        right.pack(side="left", fill="both", expand=True, padx=6, pady=6)
+        # Right: Time series Plot
+        self.time_series_frame = ttk.LabelFrame(holder, text="Live Plot")
+        self.time_series_frame.pack(side="left", fill="both", expand=True, padx=6, pady=6)
+        right = self.time_series_frame
 
         control = ttk.Frame(right)
         control.pack(fill="x", padx=6, pady=6)
@@ -730,7 +831,7 @@ class App(tk.Tk):
         ttk.Checkbutton(control, text="Pause", variable=self.paused).pack(side="left", padx=12)
 
         # Matplotlib figure
-        self.fig = Figure(figsize=(7, 4), dpi=100)
+        self.fig = Figure(figsize=(5, 4), dpi=100)
         self.ax = self.fig.add_subplot(111)
         self.ax.set_title("Selected channel")
         self.ax.set_xlabel("Sample")
@@ -739,6 +840,102 @@ class App(tk.Tk):
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=right)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+    
+    def _setup_cop_axes(self):
+        """Setup the CoP plot axes with force plate outline"""
+        if self.cop_ax is None:
+            return
+        self.cop_ax.clear()
+        
+        # Set axis limits based on plate dimensions (with some margin)
+        margin = 2.0
+        half_w = PLATE_WIDTH_CM / 2
+        half_l = PLATE_LENGTH_CM / 2
+        self.cop_ax.set_xlim(-half_w - margin, half_w + margin)
+        self.cop_ax.set_ylim(-half_l - margin, half_l + margin)
+        
+        # Draw force plate outline
+        plate_x = [-half_w, half_w, half_w, -half_w, -half_w]
+        plate_y = [half_l, half_l, -half_l, -half_l, half_l]
+        self.cop_ax.plot(plate_x, plate_y, 'k-', linewidth=2, label='Plate')
+        
+        # Draw center crosshair
+        self.cop_ax.axhline(y=0, color='gray', linestyle='--', linewidth=0.5, alpha=0.5)
+        self.cop_ax.axvline(x=0, color='gray', linestyle='--', linewidth=0.5, alpha=0.5)
+        
+        # Mark load cell positions
+        lc_positions = [
+            (-half_w, half_l, 'LC1'),   # Top-left
+            (half_w, half_l, 'LC2'),    # Top-right
+            (half_w, -half_l, 'LC3'),   # Bottom-right
+            (-half_w, -half_l, 'LC4'),  # Bottom-left
+        ]
+        for x, y, name in lc_positions:
+            self.cop_ax.plot(x, y, 'ks', markersize=8)
+            self.cop_ax.annotate(name, (x, y), textcoords="offset points", 
+                               xytext=(5, 5), fontsize=8)
+        
+        self.cop_ax.set_xlabel('X (cm) - Left/Right')
+        self.cop_ax.set_ylabel('Y (cm) - Back/Front')
+        self.cop_ax.set_title('Center of Pressure')
+        self.cop_ax.set_aspect('equal')
+        self.cop_ax.grid(True, alpha=0.3)
+    
+    def _clear_cop_trail(self):
+        """Clear the CoP trail history"""
+        self.local_cop_trail.clear()
+        self.remote_cop_trail.clear()
+        self._log("CoP trail cleared.")
+    
+    def _toggle_cop_panel(self):
+        """Toggle the CoP panel on/off"""
+        if self.cop_enabled.get():
+            self._create_cop_panel()
+            self.cop_info_frame.pack(fill="x", padx=6, pady=4)
+            self._log("CoP chart enabled.")
+        else:
+            self._destroy_cop_panel()
+            self.cop_info_frame.pack_forget()
+            self._log("CoP chart disabled.")
+    
+    def _create_cop_panel(self):
+        """Create the CoP visualization panel"""
+        if self.cop_panel is not None:
+            return  # Already exists
+        
+        # Create CoP panel
+        self.cop_panel = ttk.LabelFrame(self.plot_holder, text="Center of Pressure (CoP)")
+        # Insert before the time series plot (pack after values, before plot)
+        self.cop_panel.pack(side="left", fill="both", expand=True, padx=6, pady=6, before=self.time_series_frame)
+        
+        # CoP controls
+        cop_control = ttk.Frame(self.cop_panel)
+        cop_control.pack(fill="x", padx=6, pady=6)
+        
+        ttk.Checkbutton(cop_control, text="Local", variable=self.show_local_cop).pack(side="left", padx=4)
+        ttk.Checkbutton(cop_control, text="Remote", variable=self.show_remote_cop).pack(side="left", padx=4)
+        ttk.Checkbutton(cop_control, text="Show Trail", variable=self.show_cop_trail).pack(side="left", padx=4)
+        ttk.Button(cop_control, text="Clear Trail", command=self._clear_cop_trail).pack(side="left", padx=4)
+        
+        # CoP matplotlib figure
+        self.cop_fig = Figure(figsize=(4, 4), dpi=100)
+        self.cop_ax = self.cop_fig.add_subplot(111)
+        self._setup_cop_axes()
+        
+        self.cop_canvas = FigureCanvasTkAgg(self.cop_fig, master=self.cop_panel)
+        self.cop_canvas.get_tk_widget().pack(fill="both", expand=True)
+    
+    def _destroy_cop_panel(self):
+        """Destroy the CoP visualization panel"""
+        if self.cop_panel is not None:
+            self.cop_panel.destroy()
+            self.cop_panel = None
+            self.cop_fig = None
+            self.cop_ax = None
+            self.cop_canvas = None
+            # Clear trails
+            self.local_cop_trail.clear()
+            self.remote_cop_trail.clear()
 
     def _build_calibration_log(self):
         # Current esp32_ble_slave.ino has no calibration-log characteristic, so we
@@ -831,11 +1028,33 @@ class App(tk.Tk):
 
     def _ingest_samples(self, samples: List[List[int]]):
         # samples: list of 8-int rows
+        cop_enabled = self.cop_enabled.get()
+        
         for row in samples:
             self.sample_index += 1
             for ch in range(8):
                 self.buffers[ch].append(row[ch])
                 self.latest_vals[ch] = row[ch]
+            
+            # Only calculate CoP when enabled (performance optimization)
+            if cop_enabled:
+                # Calculate CoP for each sample (for trail)
+                # Local plate: L1(0), L2(1), L3(2), L4(3)
+                local_cop = calculate_cop(
+                    max(0, row[0]), max(0, row[1]), max(0, row[2]), max(0, row[3])
+                )
+                if local_cop[3]:  # is_valid
+                    self.local_cop_trail.append((local_cop[0], local_cop[1]))
+                self.latest_local_cop = local_cop
+                
+                # Remote plate: R5(4), R6(5), R7(6), R8(7)
+                remote_cop = calculate_cop(
+                    max(0, row[4]), max(0, row[5]), max(0, row[6]), max(0, row[7])
+                )
+                if remote_cop[3]:  # is_valid
+                    self.remote_cop_trail.append((remote_cop[0], remote_cop[1]))
+                self.latest_remote_cop = remote_cop
+        
         # update raw values panel
         for ch in range(8):
             self.val_labels[ch].configure(text=str(self.latest_vals[ch]))
@@ -855,10 +1074,27 @@ class App(tk.Tk):
         total_sum = local_sum + remote_sum
         self.total_sum_label.configure(text=str(total_sum))
         self.total_kg_label.configure(text=f"({total_sum / 100:.2f} kg)")
+        
+        # Update CoP coordinate labels only when enabled
+        if cop_enabled:
+            if self.latest_local_cop[3]:
+                self.local_cop_label.configure(
+                    text=f"X:{self.latest_local_cop[0]:+.1f}, Y:{self.latest_local_cop[1]:+.1f} cm"
+                )
+            else:
+                self.local_cop_label.configure(text="-- (no load) --")
+            
+            if self.latest_remote_cop[3]:
+                self.remote_cop_label.configure(
+                    text=f"X:{self.latest_remote_cop[0]:+.1f}, Y:{self.latest_remote_cop[1]:+.1f} cm"
+                )
+            else:
+                self.remote_cop_label.configure(text="-- (no load) --")
 
     def _update_plot(self):
         try:
             if not self.paused.get():
+                # Update time series plot
                 ch_name = self.selected_channel.get()
                 ch_idx = CHANNEL_NAMES.index(ch_name) if ch_name in CHANNEL_NAMES else 0
                 y = list(self.buffers[ch_idx])
@@ -868,10 +1104,75 @@ class App(tk.Tk):
                     self.ax.relim()
                     self.ax.autoscale_view()
                 self.canvas.draw_idle()
+                
+                # Update CoP plot only when enabled
+                if self.cop_enabled.get() and self.cop_panel is not None:
+                    self._update_cop_plot()
         except Exception as e:
             self._log(f"Plot update error: {e}")
         # refresh rate ~10 Hz is enough (lighter on CPU); tune as needed
         self.after(100, self._update_plot)
+    
+    def _update_cop_plot(self):
+        """Update the Center of Pressure visualization"""
+        if self.cop_ax is None or self.cop_canvas is None:
+            return
+        
+        try:
+            # Redraw the base (plate outline, labels, etc.)
+            self._setup_cop_axes()
+            
+            # Draw trails if enabled
+            if self.show_cop_trail.get():
+                # Local trail (green, fading)
+                if self.show_local_cop.get() and len(self.local_cop_trail) > 1:
+                    trail = list(self.local_cop_trail)
+                    x_trail = [p[0] for p in trail]
+                    y_trail = [p[1] for p in trail]
+                    # Fade effect: older points are more transparent
+                    n = len(trail)
+                    for i in range(n - 1):
+                        alpha = 0.1 + 0.4 * (i / n)
+                        self.cop_ax.plot(x_trail[i:i+2], y_trail[i:i+2], 
+                                        'g-', linewidth=1, alpha=alpha)
+                
+                # Remote trail (red, fading)
+                if self.show_remote_cop.get() and len(self.remote_cop_trail) > 1:
+                    trail = list(self.remote_cop_trail)
+                    x_trail = [p[0] for p in trail]
+                    y_trail = [p[1] for p in trail]
+                    n = len(trail)
+                    for i in range(n - 1):
+                        alpha = 0.1 + 0.4 * (i / n)
+                        self.cop_ax.plot(x_trail[i:i+2], y_trail[i:i+2], 
+                                        'r-', linewidth=1, alpha=alpha)
+            
+            # Draw current CoP positions
+            # Local CoP (green dot)
+            if self.show_local_cop.get() and self.latest_local_cop[3]:
+                x, y = self.latest_local_cop[0], self.latest_local_cop[1]
+                force_kg = self.latest_local_cop[2] / 100.0
+                # Size based on force (min 10, max 30)
+                size = min(30, max(10, force_kg * 0.5))
+                self.cop_ax.plot(x, y, 'go', markersize=size, alpha=0.8, label=f'Local ({force_kg:.1f}kg)')
+                self.cop_ax.plot(x, y, 'g+', markersize=size * 0.6, markeredgewidth=2)
+            
+            # Remote CoP (red dot)
+            if self.show_remote_cop.get() and self.latest_remote_cop[3]:
+                x, y = self.latest_remote_cop[0], self.latest_remote_cop[1]
+                force_kg = self.latest_remote_cop[2] / 100.0
+                size = min(30, max(10, force_kg * 0.5))
+                self.cop_ax.plot(x, y, 'ro', markersize=size, alpha=0.8, label=f'Remote ({force_kg:.1f}kg)')
+                self.cop_ax.plot(x, y, 'r+', markersize=size * 0.6, markeredgewidth=2)
+            
+            # Add legend if there's data
+            if (self.show_local_cop.get() and self.latest_local_cop[3]) or \
+               (self.show_remote_cop.get() and self.latest_remote_cop[3]):
+                self.cop_ax.legend(loc='upper right', fontsize=8)
+            
+            self.cop_canvas.draw_idle()
+        except Exception as e:
+            self._log(f"CoP plot error: {e}")
 
     # ---- helpers ----
     def _print_line(self, s: str):

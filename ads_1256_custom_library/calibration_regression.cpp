@@ -232,9 +232,13 @@ bool cal_add_point_total(float known_kg, uint32_t window_ms, bool use_filtered) 
   CaptureStats s;
   if (!capture_window(window_ms, use_filtered, &s)) return false;
 
-  // Compute per-cell deltas and distribute known TOTAL load across cells by contribution.
+  // Compute per-cell deltas using GEOMETRY-BASED calibration.
+  // When weight is placed at CENTER of the plate, each of the 4 corner load cells
+  // carries exactly 25% of the total weight (due to symmetry).
+  // This gives each cell its own individual slope to compensate for sensitivity differences.
   double delta[CHANNELS] = {0,0,0,0};
-  double sum_delta = 0.0;
+  int valid_channels = 0;
+  
   for (int ch = 0; ch < CHANNELS; ch++) {
     const double d = (double)s.mean[ch] - (double)g_cal.offsets[ch];
     const double ad = fabs(d);
@@ -243,6 +247,7 @@ bool cal_add_point_total(float known_kg, uint32_t window_ms, bool use_filtered) 
     // 0x7FFFFF is full-scale max; 0x800000 is min (signed 24-bit).
     if (s.mean[ch] >= 0x7FFFF0 || s.mean[ch] <= -0x7FFF00) {
       delta[ch] = 0.0;
+      Serial.printf("[CAL] LC%d SATURATED - skipping\n", ch + 1);
       continue;
     }
 
@@ -254,17 +259,40 @@ bool cal_add_point_total(float known_kg, uint32_t window_ms, bool use_filtered) 
                     ch + 1, (d < 0) ? "INVERTED" : "NORMAL");
     }
 
-    delta[ch] = ad;
-    sum_delta += ad;
+    if (ad > 100.0) {  // Minimum threshold for valid reading
+      delta[ch] = ad;
+      valid_channels++;
+    }
   }
-  if (sum_delta < 1.0) return false;
+  
+  if (valid_channels < 1) {
+    Serial.println("[CAL] ERROR: No valid channels detected");
+    return false;
+  }
 
+  // GEOMETRY-BASED CALIBRATION:
+  // Each cell carries 25% of the total weight when weight is at center.
+  // This creates individual slopes that compensate for sensitivity differences.
+  // Result: sum remains constant regardless of where weight is placed on plate.
   const float total_y10g = known_kg * 100.0f;
+  const float weight_per_cell = total_y10g / (float)CHANNELS;  // 25% each for 4 cells
+  
+  Serial.printf("[CAL] Total weight: %.1f kg = %.0f (10g units)\n", (double)known_kg, (double)total_y10g);
+  Serial.printf("[CAL] Weight per cell (geometry): %.0f (10g units) = %.2f kg\n", 
+                (double)weight_per_cell, (double)(weight_per_cell / 100.0f));
+  
   for (int ch = 0; ch < CHANNELS; ch++) {
     if (delta[ch] <= 0.0) continue;
     if (g_cal.points_ch_n[ch] >= CAL_MAX_POINTS) continue;
-    const float y10g_ch = total_y10g * (float)(delta[ch] / sum_delta);
-    g_cal.points_ch[ch][g_cal.points_ch_n[ch]++] = CalPoint{ (float)delta[ch], y10g_ch };
+    
+    // Each cell is assigned 25% of total weight (geometry-based)
+    // This gives each cell its own slope: slope = weight_per_cell / delta_counts
+    g_cal.points_ch[ch][g_cal.points_ch_n[ch]++] = CalPoint{ (float)delta[ch], weight_per_cell };
+    
+    // Calculate and display the individual slope for this channel
+    float slope = weight_per_cell / (float)delta[ch];
+    Serial.printf("[CAL] LC%d: counts=%.0f, weight=%.0f, slope=%.9f\n",
+                  ch + 1, delta[ch], (double)weight_per_cell, (double)slope);
   }
 
   g_dirty = true;
@@ -339,14 +367,43 @@ int32_t cal_read_total_10g_units(bool use_filtered) {
 
 void cal_print_status() {
   if (!g_loaded) cal_load_internal();
-  Serial.println("[CAL] ===== Calibration regression v3 (with polarity) =====");
+  Serial.println("[CAL] ===== Calibration v4 (geometry-based) =====");
+  Serial.println("[CAL] Geometry: 22cm x 35cm plate, 4 corner load cells");
+  Serial.println("[CAL] Each cell carries 25% of total weight when centered");
+  Serial.println();
+  
+  float sum_slopes = 0.0f;
+  float min_slope = 1e9f;
+  float max_slope = 0.0f;
+  int valid_slopes = 0;
+  
   for (int ch = 0; ch < CHANNELS; ch++) {
-    Serial.printf("[CAL] LC%d offset=%ld a=%.9f pts=%u pol=%s\n",
+    float slope = g_cal.ch_a_10g_per_count[ch];
+    Serial.printf("[CAL] LC%d: offset=%ld, slope=%.9f, pts=%u, pol=%s\n",
                   ch+1, (long)g_cal.offsets[ch],
-                  (double)g_cal.ch_a_10g_per_count[ch],
+                  (double)slope,
                   (unsigned)g_cal.points_ch_n[ch],
                   g_cal.polarity[ch] < 0 ? "INV" : "NRM");
+    
+    if (slope > 0.0f) {
+      sum_slopes += slope;
+      if (slope < min_slope) min_slope = slope;
+      if (slope > max_slope) max_slope = slope;
+      valid_slopes++;
+    }
   }
+  
+  if (valid_slopes > 0) {
+    float avg_slope = sum_slopes / (float)valid_slopes;
+    float spread_pct = ((max_slope - min_slope) / avg_slope) * 100.0f;
+    Serial.println();
+    Serial.printf("[CAL] Slope stats: avg=%.9f, min=%.9f, max=%.9f\n",
+                  (double)avg_slope, (double)min_slope, (double)max_slope);
+    Serial.printf("[CAL] Slope spread: %.2f%% (individual cell sensitivity differences)\n",
+                  (double)spread_pct);
+  }
+  
+  Serial.println();
   Serial.println("[CAL] Units: 10g (0.01kg). 1kg = 100 units.");
 }
 
