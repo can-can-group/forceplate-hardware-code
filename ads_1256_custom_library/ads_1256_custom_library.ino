@@ -640,7 +640,19 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
             uint8_t flash = (elapsed / 125) % 2;
             led_setAll(255, 0, 255, flash ? led_brightness : 0);  // Magenta
           } else {
-            current_led_status = LED_IDLE;  // Return to idle after flash
+            // Flash complete - transition to correct state
+            if (current_state == STATE_RUNNING) {
+              current_led_status = LED_RUNNING;
+              // Immediately update LED to show data flow color
+              if (mock_mode) {
+                led_setAll(255, 165, 0, led_brightness);  // Orange solid
+              } else {
+                led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+              }
+            } else {
+              current_led_status = LED_IDLE;
+              // LED_IDLE will be handled by next update cycle
+            }
           }
         }
       } else {
@@ -651,7 +663,19 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
             uint8_t flash = (elapsed / 125) % 2;
             led_setAll(0, 255, 0, flash ? led_brightness : 0);  // Green
           } else {
-            current_led_status = LED_IDLE;  // Return to idle after flash
+            // Flash complete - transition to correct state
+            if (current_state == STATE_RUNNING) {
+              current_led_status = LED_RUNNING;
+              // Immediately update LED to show data flow color
+              if (mock_mode) {
+                led_setAll(255, 165, 0, led_brightness);  // Orange solid
+              } else {
+                led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+              }
+            } else {
+              current_led_status = LED_IDLE;
+              // LED_IDLE will be handled by next update cycle
+            }
           }
         }
       }
@@ -676,7 +700,19 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
             uint8_t flash = (elapsed / 150) % 2;
             led_setAll(255, 0, 255, flash ? led_brightness : 0);  // Magenta
           } else {
-            current_led_status = LED_IDLE;  // Return to idle after flash
+            // Flash complete - transition to correct state
+            if (current_state == STATE_RUNNING) {
+              current_led_status = LED_RUNNING;
+              // Immediately update LED to show data flow color
+              if (mock_mode) {
+                led_setAll(255, 165, 0, led_brightness);  // Orange solid
+              } else {
+                led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+              }
+            } else {
+              current_led_status = LED_IDLE;
+              // LED_IDLE will be handled by next update cycle
+            }
           }
         }
       } else {
@@ -687,7 +723,19 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
             uint8_t flash = (elapsed / 150) % 2;
             led_setAll(0, 255, 0, flash ? led_brightness : 0);  // Green
           } else {
-            current_led_status = LED_IDLE;  // Return to idle after flash
+            // Flash complete - transition to correct state
+            if (current_state == STATE_RUNNING) {
+              current_led_status = LED_RUNNING;
+              // Immediately update LED to show data flow color
+              if (mock_mode) {
+                led_setAll(255, 165, 0, led_brightness);  // Orange solid
+              } else {
+                led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+              }
+            } else {
+              current_led_status = LED_IDLE;
+              // LED_IDLE will be handled by next update cycle
+            }
           }
         }
       }
@@ -711,7 +759,19 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
           if (elapsed < 800) {
             led_setAll(255, 0, 255, led_brightness);  // Magenta
           } else {
-            current_led_status = LED_IDLE;  // Return to idle after flash
+            // Flash complete - transition to correct state
+            if (current_state == STATE_RUNNING) {
+              current_led_status = LED_RUNNING;
+              // Immediately update LED to show data flow color
+              if (mock_mode) {
+                led_setAll(255, 165, 0, led_brightness);  // Orange solid
+              } else {
+                led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+              }
+            } else {
+              current_led_status = LED_IDLE;
+              // LED_IDLE will be handled by next update cycle
+            }
           }
         }
       } else {
@@ -721,7 +781,19 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
           if (elapsed < 800) {
             led_setAll(0, 255, 0, led_brightness);  // Green
           } else {
-            current_led_status = LED_IDLE;  // Return to idle after flash
+            // Flash complete - transition to correct state
+            if (current_state == STATE_RUNNING) {
+              current_led_status = LED_RUNNING;
+              // Immediately update LED to show data flow color
+              if (mock_mode) {
+                led_setAll(255, 165, 0, led_brightness);  // Orange solid
+              } else {
+                led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+              }
+            } else {
+              current_led_status = LED_IDLE;
+              // LED_IDLE will be handled by next update cycle
+            }
           }
         }
       }
@@ -735,7 +807,19 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
           if (elapsed < 200) {
             led_setAll(0, 100, 255, led_brightness);  // Blue
           } else {
-            current_led_status = LED_IDLE;  // Return to idle after flash
+            // Flash complete - transition to correct state
+            if (current_state == STATE_RUNNING) {
+              current_led_status = LED_RUNNING;
+              // Immediately update LED to show data flow color
+              if (mock_mode) {
+                led_setAll(255, 165, 0, led_brightness);  // Orange solid
+              } else {
+                led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+              }
+            } else {
+              current_led_status = LED_IDLE;
+              // LED_IDLE will be handled by next update cycle
+            }
           }
         }
       } else {
@@ -745,7 +829,19 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
           if (elapsed < 200) {
             led_setAll(255, 165, 0, led_brightness);  // Orange
           } else {
-            current_led_status = LED_IDLE;  // Return to idle after flash
+            // Flash complete - transition to correct state
+            if (current_state == STATE_RUNNING) {
+              current_led_status = LED_RUNNING;
+              // Immediately update LED to show data flow color
+              if (mock_mode) {
+                led_setAll(255, 165, 0, led_brightness);  // Orange solid
+              } else {
+                led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+              }
+            } else {
+              current_led_status = LED_IDLE;
+              // LED_IDLE will be handled by next update cycle
+            }
           }
         }
       }
@@ -1643,8 +1739,10 @@ void loop() {
   // Update LED status (every 50ms for smooth animations)
   // Skip LED updates during RUNNING state to avoid timing interference
   // (WS2812 uses noInterrupts() which blocks millis()/timing)
+  // Exception: Allow updates during RUNNING if in calibration state (needed for flash timing)
   static uint32_t last_led_update = 0;
-  if (current_state != STATE_RUNNING && millis() - last_led_update >= 50) {
+  bool is_calibration_state = (current_led_status >= LED_CAL_TARE_COLLECTING);
+  if ((current_state != STATE_RUNNING || is_calibration_state) && millis() - last_led_update >= 50) {
     update_led_status();
     last_led_update = millis();
   }
