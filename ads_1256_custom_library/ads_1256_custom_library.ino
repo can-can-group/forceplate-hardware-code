@@ -67,7 +67,9 @@ enum LedStatus {
   LED_CAL_FIT_RUNNING,
   LED_CAL_FIT_SUCCESS,
   LED_CAL_CLEAR,
-  LED_CAL_ERROR
+  LED_CAL_ERROR,
+  // Ping pong state
+  LED_PING_PONG
 };
 
 static LedStatus current_led_status = LED_BOOTING;
@@ -79,6 +81,7 @@ static bool ble_connected = false;  // BLE connection status
 static bool ble_connect_flash_active = false;  // Flash animation when BLE connects
 static uint32_t ble_connect_flash_start_ms = 0;  // When BLE connect flash started
 static uint8_t ble_connect_flash_count = 0;  // Number of flashes completed
+static LedStatus led_status_before_ping = LED_IDLE;  // Store previous status before ping pong
 
 // ============================================================================
 // DATA ACQUISITION STATE MANAGEMENT
@@ -854,6 +857,42 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
         led_setAll(255, 0, 0, phase ? led_brightness : 0);
       }
       break;
+      
+    case LED_PING_PONG:
+      // White flash 3 times, then return to previous status
+      {
+        uint32_t elapsed = now - led_success_start_ms;
+        // Each flash cycle: 200ms ON, 200ms OFF = 400ms per flash
+        // 3 flashes = 1200ms total
+        if (elapsed < 1200) {
+          uint32_t cycle_pos = elapsed % 400;  // Position within each 400ms cycle
+          if (cycle_pos < 200) {
+            // Flash ON (first 200ms of each cycle)
+            led_setAll(255, 255, 255, led_brightness);  // White
+          } else {
+            // Flash OFF (last 200ms of each cycle)
+            led_setAll(0, 0, 0, 0);
+          }
+        } else {
+          // All 3 flashes complete - restore previous status
+          current_led_status = led_status_before_ping;
+          // Immediately render the restored status
+          if (current_led_status == LED_RUNNING) {
+            // Immediately update LED to show data flow color
+            extern bool mock_data_is_enabled();
+            bool mock_mode = mock_data_is_enabled();
+            if (mock_mode) {
+              led_setAll(255, 165, 0, led_brightness);  // Orange solid
+            } else {
+              led_setAll(6, 28, 47, led_brightness);  // Dark blue solid
+            }
+          } else {
+            // For other states, let next update cycle handle it
+            // (updates work normally when not in RUNNING state)
+          }
+        }
+      }
+      break;
   }
   
   led_last_update_ms = now;
@@ -1103,6 +1142,12 @@ void handle_esp32_commands() {
       Serial.println("[T41] PING received, sending PONG via Software TX (Pin 16)...");
       Serial.printf("[T41] Software TX config: Pin=%d, Baud=%d, BitTime=%d us\n", 
                     SOFT_TX_PIN, SOFT_TX_BAUD, SOFT_TX_BIT_TIME_US);
+      
+      // Save current LED status and start ping-pong LED animation
+      led_status_before_ping = current_led_status;
+      current_led_status = LED_PING_PONG;
+      led_success_start_ms = millis();
+      update_led_status();  // Update LED immediately
       
       // Verify pin is configured
       pinMode(SOFT_TX_PIN, OUTPUT);
@@ -1739,10 +1784,11 @@ void loop() {
   // Update LED status (every 50ms for smooth animations)
   // Skip LED updates during RUNNING state to avoid timing interference
   // (WS2812 uses noInterrupts() which blocks millis()/timing)
-  // Exception: Allow updates during RUNNING if in calibration state (needed for flash timing)
+  // Exception: Allow updates during RUNNING if in calibration state or ping-pong (needed for flash timing)
   static uint32_t last_led_update = 0;
   bool is_calibration_state = (current_led_status >= LED_CAL_TARE_COLLECTING);
-  if ((current_state != STATE_RUNNING || is_calibration_state) && millis() - last_led_update >= 50) {
+  bool is_ping_pong_state = (current_led_status == LED_PING_PONG);
+  if ((current_state != STATE_RUNNING || is_calibration_state || is_ping_pong_state) && millis() - last_led_update >= 50) {
     update_led_status();
     last_led_update = millis();
   }
