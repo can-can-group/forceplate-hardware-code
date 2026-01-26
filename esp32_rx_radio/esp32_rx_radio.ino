@@ -30,15 +30,29 @@ static const uint32_t BMS_UART_SEND_MS = 30000; // Send battery data to BLE slav
 static const float EMA_ALPHA = 0.10f;
 
 // BQ register map (subset for reading)
+static const uint8_t REG00_VSYSMIN  = 0x00;
+static const uint8_t REG01_VREG     = 0x01;
+static const uint8_t REG03_ICHG     = 0x03;
+static const uint8_t REG06_IINDPM   = 0x06;
+static const uint8_t REG0F_CTRL0    = 0x0F;  // EN_CHG bit5
+static const uint8_t REG10_CTRL1    = 0x10;  // WATCHDOG bits[2:0]
 static const uint8_t REG2E_ADC_CTRL = 0x2E;
 static const uint8_t REG2F_ADC_DIS0 = 0x2F;
 static const uint8_t REG3B_VBAT_ADC = 0x3B;
+static const uint8_t REG32_IBAT = 0x32;  // Battery current register (LSB-first, signed, mA)
 
 // BMS state - Local
 static float vBatFiltCal = NAN;
 static float currentSoc = 0.0f;
+static float iBatFilt = NAN;  // Filtered battery current (A) - slow filter for SOC
+static float iBatFiltFast = NAN;  // Fast filtered current for charging detection
+static bool isCharging = false;  // Charging status (positive current > threshold) - actual state sent to Teensy
+static bool desiredChargingState = false;  // Desired charging state based on current readings
 static uint32_t lastBmsSampleMs = 0;
 static uint32_t lastBmsUartSendMs = 0;
+static uint32_t lastChargingCheckMs = 0;  // Faster check for charging status
+static uint32_t lastStateChangeMs = 0;  // When charging state last changed (for debouncing)
+static uint32_t desiredStateStartMs = 0;  // When desired state started (for debouncing)
 static bool bmsInitialized = false;
 
 // BMS state - Remote (received from SPI Slave via ESP-NOW)
@@ -374,6 +388,17 @@ static bool bqRead16_MSB(uint8_t reg, uint16_t &val) {
   return true;
 }
 
+static bool bqRead16_LSB(uint8_t reg, uint16_t &val) {
+  Wire.beginTransmission(BQ_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint8_t)BQ_ADDR, (uint8_t)2) != 2) return false;
+  uint8_t lsb = Wire.read();
+  uint8_t msb = Wire.read();
+  val = ((uint16_t)lsb | ((uint16_t)msb << 8));
+  return true;
+}
+
 static void bqAdcEnableBestEffort() {
   uint8_t r2e = 0, r2f = 0;
 
@@ -402,14 +427,37 @@ static bool readVBATraw(float &vbatV) {
   return true;
 }
 
+static bool bqDisableWatchdog() {
+  uint8_t r10 = 0;
+  if (!bqRead8(REG10_CTRL1, r10)) return false;
+  r10 &= ~0x07;  // WD=0
+  return bqWrite8(REG10_CTRL1, r10);
+}
+
 static bool bmsInit() {
   if (!bqProbe()) {
     Serial.println("[BMS] ✗ BQ charger not found at address 0x6B");
     return false;
   }
   
+  // Disable watchdog first
+  if (!bqDisableWatchdog()) {
+    Serial.println("[BMS] ⚠ Failed to disable watchdog (continuing anyway)");
+  }
+  
+  // Enable ADC - this is critical for reading IBAT
   bqAdcEnableBestEffort();
-  Serial.println("[BMS] ✓ BQ charger initialized");
+  
+  Serial.println("[BMS] ✓ BQ charger initialized (ADC enabled)");
+  return true;
+}
+
+static bool readIBAT(float &ibatA, int16_t &raw_mA) {
+  uint16_t u = 0;
+  if (!bqRead16_LSB(REG32_IBAT, u)) return false;
+  int16_t s = (int16_t)u;
+  raw_mA = s;
+  ibatA = (float)s / 1000.0f;  // Convert from mA to A
   return true;
 }
 
@@ -421,7 +469,7 @@ static void bmsUpdateReading() {
   
   float vcal = applyVbatCal(vraw);
   
-  // EMA filter
+  // EMA filter for voltage
   if (isnan(vBatFiltCal)) {
     vBatFiltCal = vcal;
   } else {
@@ -429,6 +477,145 @@ static void bmsUpdateReading() {
   }
   
   currentSoc = socFromLUT(vBatFiltCal);
+  
+  // Read and filter battery current (for SOC calculation, but use fast check for status)
+  float ibat = 0;
+  int16_t raw_mA = 0;
+  if (readIBAT(ibat, raw_mA)) {
+    if (isnan(iBatFilt)) {
+      iBatFilt = ibat;
+    } else {
+      iBatFilt = EMA_ALPHA * ibat + (1.0f - EMA_ALPHA) * iBatFilt;
+    }
+  }
+}
+
+// Fast charging check (runs more frequently for responsive detection)
+static void checkChargingStatus() {
+  if (!bqProbe() || !bmsInitialized) {
+    static uint32_t lastErrorLog = 0;
+    if (millis() - lastErrorLog >= 5000) {
+      Serial.printf("[BMS] checkChargingStatus: BMS not ready (bqProbe=%d, bmsInitialized=%d)\n", bqProbe(), bmsInitialized);
+      lastErrorLog = millis();
+    }
+    return;
+  }
+  
+  float ibat = 0;
+  int16_t raw_mA = 0;
+  if (!readIBAT(ibat, raw_mA)) {
+    static uint32_t lastReadError = 0;
+    if (millis() - lastReadError >= 5000) {
+      Serial.println("[BMS] checkChargingStatus: Failed to read IBAT");
+      lastReadError = millis();
+    }
+    return;  // Exit if read fails
+  }
+  
+  // Handle zero readings - if raw_mA is 0, treat it as a valid zero reading (not charging)
+  // Only skip if there's a clear mismatch (raw_mA non-zero but ibat is zero, or vice versa with large values)
+  if (raw_mA == 0 && fabs(ibat) > 0.01f) {
+    // Suspicious: raw_mA says 0 but ibat is significant - might be a reading error
+    // Still process it but log it
+    static uint32_t lastSkipLog = 0;
+    if (millis() - lastSkipLog >= 5000) {
+      Serial.printf("[BMS] ⚠ Suspicious reading: raw_mA=%d but ibat=%.3fA (processing anyway)\n", raw_mA, ibat);
+      lastSkipLog = millis();
+    }
+  }
+  
+  // Use faster EMA for immediate response (higher alpha = more responsive)
+  float fast_alpha = 0.5f;  // More responsive to catch charging quickly
+  if (isnan(iBatFiltFast)) {
+    iBatFiltFast = ibat;  // Initialize on first read
+    Serial.printf("[BMS] checkChargingStatus: Initialized iBatFiltFast=%.3fA (raw=%.3fA, raw_mA=%d)\n", iBatFiltFast, ibat, raw_mA);
+  } else {
+    iBatFiltFast = fast_alpha * ibat + (1.0f - fast_alpha) * iBatFiltFast;
+  }
+  
+  // Hysteresis thresholds to prevent oscillation
+  // Higher threshold to start charging, lower threshold to stop
+  const float CHARGE_START_THRESHOLD = 0.04f;  // 40mA - must exceed this to start charging
+  const float CHARGE_STOP_THRESHOLD = 0.015f;  // 15mA - must drop below this to stop charging (lowered for stability)
+  const float CHARGE_PEAK_THRESHOLD = 0.06f;   // 60mA - if raw reading exceeds this, trigger immediately
+  const uint32_t MIN_STATE_HOLD_MS = 2000;      // Minimum 2 seconds before state change (debouncing)
+  
+  uint32_t now = millis();
+  
+  // Initialize timers on first run
+  if (lastStateChangeMs == 0) {
+    lastStateChangeMs = now;
+    desiredStateStartMs = now;
+  }
+  
+  // Determine desired charging state based on current readings
+  bool newDesiredState;
+  if (isCharging) {
+    // Currently charging - use lower threshold to stop (hysteresis)
+    // Also check raw reading - if it's consistently high, keep charging even if filtered drops
+    bool filteredSaysStop = (iBatFiltFast <= CHARGE_STOP_THRESHOLD);
+    bool rawSaysStop = (ibat <= CHARGE_STOP_THRESHOLD && raw_mA <= 15);
+    
+    // Require both filtered AND raw to be below threshold to stop
+    newDesiredState = !(filteredSaysStop && rawSaysStop);
+  } else {
+    // Not charging - check both filtered value and peak detection
+    // Use peak detection: if raw reading is high enough, trigger immediately
+    // Otherwise use filtered value with threshold
+    if (ibat > CHARGE_PEAK_THRESHOLD) {
+      // Peak detected - trigger immediately
+      newDesiredState = true;
+    } else {
+      // Use filtered value with threshold
+      newDesiredState = (iBatFiltFast > CHARGE_START_THRESHOLD);
+    }
+  }
+  
+  // Track when desired state changes
+  if (newDesiredState != desiredChargingState) {
+    // Desired state changed - reset timer
+    desiredChargingState = newDesiredState;
+    desiredStateStartMs = now;
+  }
+  
+  // Calculate how long desired state has been stable
+  uint32_t desiredStateHoldMs = now - desiredStateStartMs;
+  
+  // Debouncing: Only allow state change if desired state has been stable for minimum hold time
+  bool stateNeedsChange = (desiredChargingState != isCharging);
+  bool canChangeState = (desiredStateHoldMs >= MIN_STATE_HOLD_MS);
+  
+  // Log current status every 2 seconds for debugging
+  static uint32_t lastLogMs = 0;
+  if (now - lastLogMs >= 2000) {
+    Serial.printf("[BMS] IBAT: raw=%.3fA (raw_mA=%d), filtered=%.3fA, isCharging=%d, desired=%d, hold=%lums (min=%lu)\n", 
+                  ibat, raw_mA, iBatFiltFast, isCharging, desiredChargingState, desiredStateHoldMs, MIN_STATE_HOLD_MS);
+    lastLogMs = now;
+  }
+  
+  // Send charging status to Teensy when it changes (with debouncing)
+  if (stateNeedsChange && canChangeState) {
+    isCharging = desiredChargingState;
+    lastStateChangeMs = now;  // Reset change timer
+    
+    if (isCharging) {
+      Serial1.println("BATTERY_CHARGING");
+      Serial1.flush();
+      Serial.printf("[BMS] ✓ CHARGING DETECTED (IBAT=%.3fA, raw_mA=%d) → Sending BATTERY_CHARGING to Local Teensy\n", iBatFiltFast, raw_mA);
+    } else {
+      Serial1.println("BATTERY_NOT_CHARGING");
+      Serial1.flush();
+      Serial.printf("[BMS] ✗ CHARGING STOPPED (IBAT=%.3fA, raw_mA=%d) → Sending BATTERY_NOT_CHARGING to Local Teensy\n", iBatFiltFast, raw_mA);
+    }
+  } else if (stateNeedsChange && !canChangeState) {
+    // State wants to change but debounce timer hasn't expired yet
+    static uint32_t lastDebounceLog = 0;
+    if (now - lastDebounceLog >= 3000) {
+      Serial.printf("[BMS] ⏳ State change pending: desired=%d, current=%d, hold=%lums (need %lums) - debouncing\n", 
+                    desiredChargingState, isCharging, desiredStateHoldMs, MIN_STATE_HOLD_MS);
+      lastDebounceLog = now;
+    }
+  }
 }
 
 static bool validateEspNowBattery(const ESPNowBattery* pkt) {
@@ -1167,6 +1354,12 @@ void loop() {
     if (bmsInitialized && (now - lastBmsSampleMs >= BMS_SAMPLE_MS)) {
         lastBmsSampleMs = now;
         bmsUpdateReading();
+    }
+    
+    // Fast charging status check (every 500ms for responsive detection)
+    if (bmsInitialized && (now - lastChargingCheckMs >= 500)) {
+        lastChargingCheckMs = now;
+        checkChargingStatus();
     }
     
     // Periodic battery data send to BLE Slave

@@ -32,14 +32,26 @@ static const uint32_t BMS_SAMPLE_MS = 30000;  // Read battery every 30 seconds (
 static const float EMA_ALPHA = 0.10f;
 
 // BQ register map (subset for reading)
+static const uint8_t REG00_VSYSMIN  = 0x00;
+static const uint8_t REG01_VREG     = 0x01;
+static const uint8_t REG03_ICHG     = 0x03;
+static const uint8_t REG06_IINDPM   = 0x06;
+static const uint8_t REG0F_CTRL0    = 0x0F;  // EN_CHG bit5
+static const uint8_t REG10_CTRL1    = 0x10;  // WATCHDOG bits[2:0]
 static const uint8_t REG2E_ADC_CTRL = 0x2E;
 static const uint8_t REG2F_ADC_DIS0 = 0x2F;
 static const uint8_t REG3B_VBAT_ADC = 0x3B;
+static const uint8_t REG32_IBAT = 0x32;  // Battery current register (LSB-first, signed, mA)
 
 // BMS state
 static float vBatFiltCal = NAN;
 static float currentSoc = 0.0f;
+static float iBatFilt = NAN;  // Filtered battery current (A) - slow filter for SOC
+static float iBatFiltFast = NAN;  // Fast filtered current for charging detection
+static bool isCharging = false;  // Charging status (positive current > threshold)
+static bool lastChargingState = false;  // Previous charging state for change detection
 static uint32_t lastBmsSampleMs = 0;
+static uint32_t lastChargingCheckMs = 0;  // Faster check for charging status
 static bool bmsInitialized = false;
 
 // SOC lookup table (VBATcal -> SOC)
@@ -408,6 +420,17 @@ static bool bqRead16_MSB(uint8_t reg, uint16_t &val) {
   return true;
 }
 
+static bool bqRead16_LSB(uint8_t reg, uint16_t &val) {
+  Wire.beginTransmission(BQ_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint8_t)BQ_ADDR, (uint8_t)2) != 2) return false;
+  uint8_t lsb = Wire.read();
+  uint8_t msb = Wire.read();
+  val = ((uint16_t)lsb | ((uint16_t)msb << 8));
+  return true;
+}
+
 static void bqAdcEnableBestEffort() {
   uint8_t r2e = 0, r2f = 0;
 
@@ -436,14 +459,37 @@ static bool readVBATraw(float &vbatV) {
   return true;
 }
 
+static bool bqDisableWatchdog() {
+  uint8_t r10 = 0;
+  if (!bqRead8(REG10_CTRL1, r10)) return false;
+  r10 &= ~0x07;  // WD=0
+  return bqWrite8(REG10_CTRL1, r10);
+}
+
 static bool bmsInit() {
   if (!bqProbe()) {
     Serial.println("[BMS] ✗ BQ charger not found at address 0x6B");
     return false;
   }
   
+  // Disable watchdog first
+  if (!bqDisableWatchdog()) {
+    Serial.println("[BMS] ⚠ Failed to disable watchdog (continuing anyway)");
+  }
+  
+  // Enable ADC - this is critical for reading IBAT
   bqAdcEnableBestEffort();
-  Serial.println("[BMS] ✓ BQ charger initialized");
+  
+  Serial.println("[BMS] ✓ BQ charger initialized (ADC enabled)");
+  return true;
+}
+
+static bool readIBAT(float &ibatA, int16_t &raw_mA) {
+  uint16_t u = 0;
+  if (!bqRead16_LSB(REG32_IBAT, u)) return false;
+  int16_t s = (int16_t)u;
+  raw_mA = s;
+  ibatA = (float)s / 1000.0f;  // Convert from mA to A
   return true;
 }
 
@@ -455,7 +501,7 @@ static void bmsUpdateReading() {
   
   float vcal = applyVbatCal(vraw);
   
-  // EMA filter
+  // EMA filter for voltage
   if (isnan(vBatFiltCal)) {
     vBatFiltCal = vcal;
   } else {
@@ -463,6 +509,99 @@ static void bmsUpdateReading() {
   }
   
   currentSoc = socFromLUT(vBatFiltCal);
+  
+  // Read and filter battery current (for SOC calculation, but use fast check for status)
+  float ibat = 0;
+  int16_t raw_mA = 0;
+  if (readIBAT(ibat, raw_mA)) {
+    if (isnan(iBatFilt)) {
+      iBatFilt = ibat;
+    } else {
+      iBatFilt = EMA_ALPHA * ibat + (1.0f - EMA_ALPHA) * iBatFilt;
+    }
+  }
+}
+
+// Fast charging check (runs more frequently for responsive detection)
+static void checkChargingStatus() {
+  if (!bqProbe() || !bmsInitialized) {
+    static uint32_t lastErrorLog = 0;
+    if (millis() - lastErrorLog >= 5000) {
+      Serial.printf("[BMS] checkChargingStatus: BMS not ready (bqProbe=%d, bmsInitialized=%d)\n", bqProbe(), bmsInitialized);
+      lastErrorLog = millis();
+    }
+    return;
+  }
+  
+  float ibat = 0;
+  int16_t raw_mA = 0;
+  if (!readIBAT(ibat, raw_mA)) {
+    static uint32_t lastReadError = 0;
+    if (millis() - lastReadError >= 5000) {
+      Serial.println("[BMS] checkChargingStatus: Failed to read IBAT");
+      lastReadError = millis();
+    }
+    return;  // Exit if read fails
+  }
+  
+  // Skip invalid readings (raw_mA should match the sign of ibat)
+  // If raw_mA is 0 but ibat is non-zero, there might be a reading issue
+  if (raw_mA == 0 && fabs(ibat) > 0.001f) {
+    // Reading might be invalid, skip this update
+    static uint32_t lastSkipLog = 0;
+    if (millis() - lastSkipLog >= 5000) {
+      Serial.printf("[BMS] ⚠ Skipping suspicious reading: raw_mA=%d but ibat=%.3fA\n", raw_mA, ibat);
+      lastSkipLog = millis();
+    }
+    return;
+  }
+  
+  // Use faster EMA for immediate response (higher alpha = more responsive)
+  float fast_alpha = 0.3f;  // Slightly slower for more stability
+  if (isnan(iBatFiltFast)) {
+    iBatFiltFast = ibat;  // Initialize on first read
+    Serial.printf("[BMS] checkChargingStatus: Initialized iBatFiltFast=%.3fA (raw=%.3fA, raw_mA=%d)\n", iBatFiltFast, ibat, raw_mA);
+  } else {
+    iBatFiltFast = fast_alpha * ibat + (1.0f - fast_alpha) * iBatFiltFast;
+  }
+  
+  // Hysteresis thresholds to prevent oscillation
+  // Higher threshold to start charging, lower threshold to stop
+  const float CHARGE_START_THRESHOLD = 0.05f;  // 50mA - must exceed this to start charging
+  const float CHARGE_STOP_THRESHOLD = 0.02f;   // 20mA - must drop below this to stop charging
+  
+  bool newChargingState;
+  if (isCharging) {
+    // Currently charging - use lower threshold to stop (hysteresis)
+    newChargingState = (iBatFiltFast > CHARGE_STOP_THRESHOLD);
+  } else {
+    // Not charging - use higher threshold to start (hysteresis)
+    newChargingState = (iBatFiltFast > CHARGE_START_THRESHOLD);
+  }
+  
+  // Log current status every 2 seconds for debugging
+  static uint32_t lastLogMs = 0;
+  uint32_t now = millis();
+  if (now - lastLogMs >= 2000) {
+    Serial.printf("[BMS] IBAT: raw=%.3fA (raw_mA=%d), filtered=%.3fA, isCharging=%d (start=%.3fA, stop=%.3fA)\n", 
+                  ibat, raw_mA, iBatFiltFast, newChargingState, CHARGE_START_THRESHOLD, CHARGE_STOP_THRESHOLD);
+    lastLogMs = now;
+  }
+  
+  // Send charging status to remote Teensy when it changes
+  if (newChargingState != lastChargingState) {
+    isCharging = newChargingState;
+    lastChargingState = isCharging;
+    if (isCharging) {
+      Serial1.println("BATTERY_CHARGING");
+      Serial1.flush();
+      Serial.printf("[BMS] ✓ CHARGING DETECTED (IBAT=%.3fA, raw_mA=%d) → Sending BATTERY_CHARGING to Remote Teensy\n", iBatFiltFast, raw_mA);
+    } else {
+      Serial1.println("BATTERY_NOT_CHARGING");
+      Serial1.flush();
+      Serial.printf("[BMS] ✗ CHARGING STOPPED (IBAT=%.3fA, raw_mA=%d) → Sending BATTERY_NOT_CHARGING to Remote Teensy\n", iBatFiltFast, raw_mA);
+    }
+  }
 }
 
 static bool sendBatteryPacket() {
@@ -1022,6 +1161,39 @@ void setup() {
   Serial.printf("[SPI_SLAVE] Serial1: 9600 bps (TX=GPIO%d → Teensy, RX=GPIO%d ← Teensy)\n", 
                 TEENSY_UART_TX_PIN, TEENSY_UART_RX_PIN);
   
+  // Send initial charging status after Serial1 is ready (with delay for first reading)
+  if (bmsInitialized) {
+    delay(300);  // Allow BMS to settle and Serial1 to be ready
+    // Do multiple readings to initialize filters
+    for (int i = 0; i < 3; i++) {
+      bmsUpdateReading();
+      delay(50);
+    }
+    // Force an initial check and send status
+    checkChargingStatus();
+    // Also send current status immediately (in case checkChargingStatus didn't send it)
+    if (!isnan(iBatFiltFast)) {
+      if (isCharging) {
+        Serial1.println("BATTERY_CHARGING");
+        Serial1.flush();
+        Serial.printf("[BMS] Initial status: Charging (IBAT=%.3fA)\n", iBatFiltFast);
+      } else {
+        Serial1.println("BATTERY_NOT_CHARGING");
+        Serial1.flush();
+        Serial.printf("[BMS] Initial status: Not charging (IBAT=%.3fA)\n", iBatFiltFast);
+      }
+      // Update lastChargingState so we don't send duplicate on first loop iteration
+      lastChargingState = isCharging;
+    } else {
+      // If reading failed, default to not charging
+      Serial1.println("BATTERY_NOT_CHARGING");
+      Serial1.flush();
+      Serial.println("[BMS] Initial status: Not charging (reading failed)");
+      lastChargingState = false;
+      isCharging = false;
+    }
+  }
+  
   // Test UART connection at startup
   delay(1000); // Give Teensy time to boot
   Serial.println("[TX] Testing UART connection to Teensy...");
@@ -1078,6 +1250,12 @@ void loop() {
     lastBmsSampleMs = now;
     bmsUpdateReading();
     sendBatteryPacket();
+  }
+  
+  // Fast charging status check (every 500ms for responsive detection)
+  if (bmsInitialized && (now - lastChargingCheckMs >= 500)) {
+    lastChargingCheckMs = now;
+    checkChargingStatus();
   }
   
   handle_serial_commands();

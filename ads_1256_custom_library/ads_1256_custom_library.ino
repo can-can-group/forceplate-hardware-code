@@ -82,6 +82,7 @@ static bool ble_connect_flash_active = false;  // Flash animation when BLE conne
 static uint32_t ble_connect_flash_start_ms = 0;  // When BLE connect flash started
 static uint8_t ble_connect_flash_count = 0;  // Number of flashes completed
 static LedStatus led_status_before_ping = LED_IDLE;  // Store previous status before ping pong
+static bool battery_charging = false;  // Battery charging status
 
 // ============================================================================
 // DATA ACQUISITION STATE MANAGEMENT
@@ -453,6 +454,30 @@ static inline void led_ws_show_npixels(uint8_t pin, uint8_t r, uint8_t g, uint8_
   delayMicroseconds(80);
 }
 
+// Send data to multiple LEDs with individual brightness control (for chase effect)
+static inline void led_ws_show_npixels_chase(uint8_t pin, uint8_t r, uint8_t g, uint8_t b, uint8_t br, 
+                                             uint8_t num_leds, uint8_t active_led_idx) {
+  noInterrupts();
+  // Send data for all LEDs in the chain
+  for (uint8_t i = 0; i < num_leds; i++) {
+    // Calculate brightness: active LED at full brightness, others at 10% for trailing effect
+    uint8_t led_br = (i == active_led_idx) ? br : (br / 10);
+    
+    uint8_t led_r = led_scale8(r, led_br);
+    uint8_t led_g = led_scale8(g, led_br);
+    uint8_t led_b = led_scale8(b, led_br);
+    
+    // WS2812 order: GRB
+    led_ws_send_byte(pin, led_g);
+    led_ws_send_byte(pin, led_r);
+    led_ws_send_byte(pin, led_b);
+  }
+  interrupts();
+
+  // Single latch delay at the end (after all pixels)
+  delayMicroseconds(80);
+}
+
 static inline void led_allEN(bool on) {
   digitalWriteFast(LED_EN1, on);
   digitalWriteFast(LED_EN2, on);
@@ -481,6 +506,46 @@ static inline void led_setAll(uint8_t r, uint8_t g, uint8_t b, uint8_t br) {
     led_ws_show_1pixel(LED_DI2, r, g, b, br);
     led_ws_show_1pixel(LED_DI3, r, g, b, br);
     led_ws_show_1pixel(LED_DI4, r, g, b, br);
+  }
+}
+
+// Chase effect: animates one LED at a time across all strips
+// chase_pos: 0 to (LEDS_PER_PIN * 4 - 1) for full cycle across all strips
+static inline void led_setChase(uint8_t r, uint8_t g, uint8_t b, uint8_t br, uint16_t chase_pos) {
+  if (LEDS_PER_PIN > 1) {
+    // Multiple LEDs per pin - create wave effect across all strips
+    // Calculate which LED in which strip should be active
+    uint8_t total_leds = LEDS_PER_PIN * 4;
+    uint16_t pos = chase_pos % total_leds;
+    
+    // Determine which pin (0-3) and which LED in that pin (0 to LEDS_PER_PIN-1)
+    uint8_t pin_idx = pos / LEDS_PER_PIN;
+    uint8_t led_idx = pos % LEDS_PER_PIN;
+    
+    uint8_t pins[4] = {LED_DI1, LED_DI2, LED_DI3, LED_DI4};
+    
+    // Set all pins, with the active LED highlighted on the correct pin
+    for (uint8_t p = 0; p < 4; p++) {
+      if (p == pin_idx) {
+        // Active pin: use chase function to highlight one LED
+        led_ws_show_npixels_chase(pins[p], r, g, b, br, LEDS_PER_PIN, led_idx);
+      } else {
+        // Other pins: all LEDs dim
+        led_ws_show_npixels(pins[p], r, g, b, br / 10, LEDS_PER_PIN);
+      }
+    }
+  } else {
+    // Single LED per pin - simple pin chase
+    uint8_t pins[4] = {LED_DI1, LED_DI2, LED_DI3, LED_DI4};
+    uint8_t active_pin = chase_pos % 4;
+    
+    for (uint8_t p = 0; p < 4; p++) {
+      if (p == active_pin) {
+        led_ws_show_1pixel(pins[p], r, g, b, br);
+      } else {
+        led_ws_show_1pixel(pins[p], r, g, b, br / 10);
+      }
+    }
   }
 }
 
@@ -550,22 +615,33 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
           }
         }
       } else {
-        // Breathing effect when BLE is not connected
-        if (mock_mode) {
-          // Yellow breathing effect (2 second cycle) - Mock data mode, BLE disconnected
+        // BLE disconnected - show green breathing effect when charging, normal breathing when not charging
+        if (battery_charging) {
+          // Green breathing effect when charging (2 second cycle)
           {
             float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
             float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
             uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
-            led_setAll(255, 200, 0, br);  // Yellow breathing
+            led_setAll(0, 255, 0, br);  // Green breathing
           }
         } else {
-          // Pink/Magenta breathing effect (2 second cycle) - Real data mode, BLE disconnected
-          {
-            float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
-            float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
-            uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
-            led_setAll(167, 36, 104, br);  // #A72468 - Pink/Magenta breathing
+          // Breathing effect when not charging
+          if (mock_mode) {
+            // Yellow breathing effect (2 second cycle) - Mock data mode, BLE disconnected
+            {
+              float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
+              float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
+              uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
+              led_setAll(255, 200, 0, br);  // Yellow breathing
+            }
+          } else {
+            // Pink/Magenta breathing effect (2 second cycle) - Real data mode, BLE disconnected
+            {
+              float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
+              float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
+              uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
+              led_setAll(167, 36, 104, br);  // #A72468 - Pink/Magenta breathing
+            }
           }
         }
       }
@@ -1006,6 +1082,9 @@ void handle_esp32_commands() {
     command.trim();
     command.toUpperCase();
     
+    // Log all received commands for debugging
+    Serial.printf("[T41] Received command from ESP32: '%s'\n", command.c_str());
+    
     Serial.printf("[T41] ESP32 Command: %s\n", command.c_str());
     
     // BLE connection status commands
@@ -1039,6 +1118,20 @@ void handle_esp32_commands() {
         update_led_status();  // Update LED immediately
       }
       send_status_response("BLE_DISCONNECTED", "OK");
+    }
+    else if (command == "BATTERY_CHARGING") {
+      battery_charging = true;
+      Serial.printf("[T41] ✓ Battery charging detected (current_led_status=%d, ble_connected=%d)\n", 
+                    current_led_status, ble_connected);
+      update_led_status();  // Update LED immediately to show green breathing effect
+      send_status_response("BATTERY_CHARGING", "OK");
+    }
+    else if (command == "BATTERY_NOT_CHARGING") {
+      battery_charging = false;
+      Serial.printf("[T41] ✗ Battery not charging (current_led_status=%d, ble_connected=%d)\n", 
+                    current_led_status, ble_connected);
+      update_led_status();  // Update LED immediately to show normal breathing effect
+      send_status_response("BATTERY_NOT_CHARGING", "OK");
     }
     else if (command == "START") {
       if (start_data_acquisition()) {
