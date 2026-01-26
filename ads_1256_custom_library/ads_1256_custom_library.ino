@@ -893,8 +893,16 @@ void handle_esp32_commands() {
     else if (command == "BLE_DISCONNECTED") {
       ble_connected = false;
       ble_connect_flash_active = false;  // Cancel any flash animation
-      Serial.println("[T41] ✗ BLE disconnected - LED: breathing");
-      update_led_status();  // Update LED immediately
+      
+      // Stop data acquisition when BLE disconnects - return to idle mode
+      if (current_state == STATE_RUNNING || current_state == STATE_STARTING) {
+        Serial.println("[T41] ✗ BLE disconnected - stopping data acquisition");
+        stop_data_acquisition();  // This sets current_led_status = LED_IDLE
+      } else {
+        Serial.println("[T41] ✗ BLE disconnected - LED: breathing");
+        current_led_status = LED_IDLE;
+        update_led_status();  // Update LED immediately
+      }
       send_status_response("BLE_DISCONNECTED", "OK");
     }
     else if (command == "START") {
