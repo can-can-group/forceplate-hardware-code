@@ -1242,8 +1242,19 @@ void setup() {
     Wire.setTimeOut(50);
     Serial.printf("[BMS] I2C initialized (SDA=GPIO%d, SCL=GPIO%d, %lu Hz)\n", I2C_SDA, I2C_SCL, I2C_HZ);
     
-    // Initialize BMS
-    bmsInitialized = bmsInit();
+  // Initialize BMS
+  bmsInitialized = bmsInit();
+  
+  // Send initial SOC to Teensy after Serial1 is ready
+  if (bmsInitialized) {
+    delay(500);  // Allow Serial1 to be ready
+    // Do initial reading
+    bmsUpdateReading();
+    // Send initial SOC
+    Serial1.printf("BATTERY_SOC:%.1f\n", currentSoc);
+    Serial1.flush();
+    Serial.printf("[BMS] Initial SOC sent to Teensy: %.1f%%\n", currentSoc);
+  }
     
     // Create response mutex for PING test synchronization
     response_mutex = xSemaphoreCreateMutex();
@@ -1366,6 +1377,10 @@ void loop() {
     if (now - lastBmsUartSendMs >= BMS_UART_SEND_MS) {
         lastBmsUartSendMs = now;
         sendBatteryToBleSlave();
+        
+        // Also send SOC to Local Teensy for battery indicator
+        Serial1.printf("BATTERY_SOC:%.1f\n", currentSoc);
+        Serial1.flush();
     }
     
     // Print live stats every 5 seconds

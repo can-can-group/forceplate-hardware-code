@@ -83,6 +83,7 @@ static uint32_t ble_connect_flash_start_ms = 0;  // When BLE connect flash start
 static uint8_t ble_connect_flash_count = 0;  // Number of flashes completed
 static LedStatus led_status_before_ping = LED_IDLE;  // Store previous status before ping pong
 static bool battery_charging = false;  // Battery charging status
+static float battery_soc = 0.0f;  // Battery state of charge (0-100%)
 
 // ============================================================================
 // DATA ACQUISITION STATE MANAGEMENT
@@ -478,6 +479,126 @@ static inline void led_ws_show_npixels_chase(uint8_t pin, uint8_t r, uint8_t g, 
   delayMicroseconds(80);
 }
 
+// Set individual LEDs on a strip with different colors/brightness
+static inline void led_ws_show_individual(uint8_t pin, uint8_t num_leds, 
+                                          const uint8_t* r_array, const uint8_t* g_array, 
+                                          const uint8_t* b_array, const uint8_t* br_array) {
+  noInterrupts();
+  // Send data for all LEDs in the chain
+  for (uint8_t i = 0; i < num_leds; i++) {
+    uint8_t led_r = led_scale8(r_array[i], br_array[i]);
+    uint8_t led_g = led_scale8(g_array[i], br_array[i]);
+    uint8_t led_b = led_scale8(b_array[i], br_array[i]);
+    
+    // WS2812 order: GRB
+    led_ws_send_byte(pin, led_g);
+    led_ws_send_byte(pin, led_r);
+    led_ws_send_byte(pin, led_b);
+  }
+  interrupts();
+
+  // Single latch delay at the end (after all pixels)
+  delayMicroseconds(80);
+}
+
+// Battery level indicator on LED 3 (18 LEDs)
+// Shows battery level 0-100% as 0-18 LEDs lit
+// Single color based on battery level (red/yellow/green)
+// When charging, shows loading line animation
+static inline void led_show_battery_indicator(uint8_t pin, float soc, bool charging, uint8_t base_brightness) {
+  const uint8_t BATTERY_LEDS = 18;  // Number of LEDs on LED 3 used for battery indicator
+  
+  // Clamp SOC to 0-100%
+  if (soc < 0.0f) soc = 0.0f;
+  if (soc > 100.0f) soc = 100.0f;
+  
+  // Determine single color based on battery level
+  uint8_t r, g, b;
+  if (soc >= 66.0f) {
+    // High battery (66-100%): Green
+    r = 0;
+    g = 255;
+    b = 0;
+  } else if (soc >= 33.0f) {
+    // Mid battery (33-66%): Yellow
+    r = 255;
+    g = 200;
+    b = 0;
+  } else {
+    // Low battery (0-33%): Red
+    r = 255;
+    g = 0;
+    b = 0;
+  }
+  
+  // Calculate how many LEDs should be lit based on current battery level (0-18)
+  uint8_t leds_lit = (uint8_t)((soc / 100.0f) * BATTERY_LEDS);
+  
+  // Prepare arrays for all LEDs in the chain
+  uint8_t r_array[LEDS_PER_PIN];
+  uint8_t g_array[LEDS_PER_PIN];
+  uint8_t b_array[LEDS_PER_PIN];
+  uint8_t br_array[LEDS_PER_PIN];
+  
+  uint8_t total_leds = (LEDS_PER_PIN > 1) ? LEDS_PER_PIN : 1;
+  
+  // Initialize all LEDs to off
+  for (uint8_t i = 0; i < total_leds; i++) {
+    r_array[i] = 0;
+    g_array[i] = 0;
+    b_array[i] = 0;
+    br_array[i] = 0;
+  }
+  
+  if (charging) {
+    // Charging: Show loading animation from current level to end
+    uint32_t now = millis();
+    uint32_t loading_cycle = 2000;  // 2 second cycle for loading animation
+    uint32_t cycle_pos = now % loading_cycle;
+    
+    // Calculate loading line position (from leds_lit to BATTERY_LEDS)
+    // The line animates from current battery level to the end (LED 18)
+    uint8_t loading_start = leds_lit;
+    uint8_t loading_end = BATTERY_LEDS;
+    uint8_t loading_range = loading_end - loading_start;
+    
+    // Calculate how far the loading line has progressed (0 to loading_range)
+    uint8_t loading_progress = (uint8_t)((cycle_pos / (float)loading_cycle) * loading_range);
+    uint8_t loading_pos = loading_start + loading_progress;
+    
+    // Light up LEDs from 0 to current level (static, shows current charge)
+    for (uint8_t i = 0; i < leds_lit && i < BATTERY_LEDS && i < total_leds; i++) {
+      r_array[i] = r;
+      g_array[i] = g;
+      b_array[i] = b;
+      br_array[i] = base_brightness;
+    }
+    
+    // Light up loading animation from current level to loading_pos
+    for (uint8_t i = leds_lit; i <= loading_pos && i < BATTERY_LEDS && i < total_leds; i++) {
+      r_array[i] = r;
+      g_array[i] = g;
+      b_array[i] = b;
+      br_array[i] = base_brightness;
+    }
+  } else {
+    // Not charging: Show static battery level (all lit LEDs same color)
+    for (uint8_t i = 0; i < leds_lit && i < BATTERY_LEDS && i < total_leds; i++) {
+      r_array[i] = r;
+      g_array[i] = g;
+      b_array[i] = b;
+      br_array[i] = base_brightness;
+    }
+  }
+  
+  // Send data to LED 3
+  if (total_leds > 1) {
+    led_ws_show_individual(pin, total_leds, r_array, g_array, b_array, br_array);
+  } else {
+    led_ws_show_1pixel(pin, r_array[0], g_array[0], b_array[0], br_array[0]);
+  }
+}
+
 static inline void led_allEN(bool on) {
   digitalWriteFast(LED_EN1, on);
   digitalWriteFast(LED_EN2, on);
@@ -615,17 +736,43 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
           }
         }
       } else {
-        // BLE disconnected - show green breathing effect when charging, normal breathing when not charging
+        // BLE disconnected
         if (battery_charging) {
-          // Green breathing effect when charging (2 second cycle)
-          {
-            float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
-            float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
-            uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
-            led_setAll(0, 255, 0, br);  // Green breathing
+          // Charging: Show battery indicator on LED 3, purple breathing on other LEDs
+          // Calculate breathing brightness for other LEDs
+          float phase = (now % 2000) / 2000.0f * 2.0f * 3.14159f;
+          float sine_val = (sin(phase) + 1.0f) / 2.0f;  // 0 to 1
+          uint8_t br = (uint8_t)(led_brightness * (0.1f + 0.9f * sine_val));
+          
+          // Set LED 1, 2, 4 to purple breathing
+          if (mock_mode) {
+            // Yellow breathing for other LEDs - Mock data mode
+            if (LEDS_PER_PIN > 1) {
+              led_ws_show_npixels(LED_DI1, 255, 200, 0, br, LEDS_PER_PIN);
+              led_ws_show_npixels(LED_DI2, 255, 200, 0, br, LEDS_PER_PIN);
+              led_ws_show_npixels(LED_DI4, 255, 200, 0, br, LEDS_PER_PIN);
+            } else {
+              led_ws_show_1pixel(LED_DI1, 255, 200, 0, br);
+              led_ws_show_1pixel(LED_DI2, 255, 200, 0, br);
+              led_ws_show_1pixel(LED_DI4, 255, 200, 0, br);
+            }
+          } else {
+            // Pink/Magenta breathing for other LEDs - Real data mode
+            if (LEDS_PER_PIN > 1) {
+              led_ws_show_npixels(LED_DI1, 167, 36, 104, br, LEDS_PER_PIN);
+              led_ws_show_npixels(LED_DI2, 167, 36, 104, br, LEDS_PER_PIN);
+              led_ws_show_npixels(LED_DI4, 167, 36, 104, br, LEDS_PER_PIN);
+            } else {
+              led_ws_show_1pixel(LED_DI1, 167, 36, 104, br);
+              led_ws_show_1pixel(LED_DI2, 167, 36, 104, br);
+              led_ws_show_1pixel(LED_DI4, 167, 36, 104, br);
+            }
           }
+          
+          // Show battery indicator on LED 3 (18 LEDs) only when charging
+          led_show_battery_indicator(LED_DI3, battery_soc, battery_charging, led_brightness);
         } else {
-          // Breathing effect when not charging
+          // Not charging: Show purple breathing on all LEDs (including LED 3)
           if (mock_mode) {
             // Yellow breathing effect (2 second cycle) - Mock data mode, BLE disconnected
             {
@@ -1123,15 +1270,23 @@ void handle_esp32_commands() {
       battery_charging = true;
       Serial.printf("[T41] ✓ Battery charging detected (current_led_status=%d, ble_connected=%d)\n", 
                     current_led_status, ble_connected);
-      update_led_status();  // Update LED immediately to show green breathing effect
+      update_led_status();  // Update LED immediately to show battery indicator
       send_status_response("BATTERY_CHARGING", "OK");
     }
     else if (command == "BATTERY_NOT_CHARGING") {
       battery_charging = false;
       Serial.printf("[T41] ✗ Battery not charging (current_led_status=%d, ble_connected=%d)\n", 
                     current_led_status, ble_connected);
-      update_led_status();  // Update LED immediately to show normal breathing effect
+      update_led_status();  // Update LED immediately to show battery indicator
       send_status_response("BATTERY_NOT_CHARGING", "OK");
+    }
+    else if (command.startsWith("BATTERY_SOC:")) {
+      // Format: BATTERY_SOC:XX.X (where XX.X is 0-100)
+      String soc_str = command.substring(12);  // Skip "BATTERY_SOC:"
+      battery_soc = soc_str.toFloat();
+      Serial.printf("[T41] Battery SOC updated: %.1f%%\n", battery_soc);
+      update_led_status();  // Update LED immediately to show new battery level
+      send_status_response("BATTERY_SOC", "OK");
     }
     else if (command == "START") {
       if (start_data_acquisition()) {

@@ -1192,6 +1192,13 @@ void setup() {
       lastChargingState = false;
       isCharging = false;
     }
+    
+    // Send initial SOC to Remote Teensy
+    delay(100);
+    bmsUpdateReading();
+    Serial1.printf("BATTERY_SOC:%.1f\n", currentSoc);
+    Serial1.flush();
+    Serial.printf("[BMS] Initial SOC sent to Remote Teensy: %.1f%%\n", currentSoc);
   }
   
   // Test UART connection at startup
@@ -1250,6 +1257,10 @@ void loop() {
     lastBmsSampleMs = now;
     bmsUpdateReading();
     sendBatteryPacket();
+    
+    // Also send SOC to Remote Teensy for battery indicator
+    Serial1.printf("BATTERY_SOC:%.1f\n", currentSoc);
+    Serial1.flush();
   }
   
   // Fast charging status check (every 500ms for responsive detection)
