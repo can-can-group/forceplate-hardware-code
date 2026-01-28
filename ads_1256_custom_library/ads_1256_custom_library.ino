@@ -813,12 +813,42 @@ __attribute__((used)) void update_led_status() {  // Made non-static so calibrat
       break;
       
     case LED_RUNNING:
-      if (mock_mode) {
-        // Orange solid - Mock data mode
-        led_setAll(255, 165, 0, led_brightness);  // Orange solid
+      if (battery_charging && !ble_connected) {
+        // Show battery indicator on LED3 while running and charging
+        if (mock_mode) {
+          // Orange solid for LED 1, 2, 4 - Mock data mode
+          if (LEDS_PER_PIN > 1) {
+            led_ws_show_npixels(LED_DI1, 255, 165, 0, led_brightness, LEDS_PER_PIN);
+            led_ws_show_npixels(LED_DI2, 255, 165, 0, led_brightness, LEDS_PER_PIN);
+            led_ws_show_npixels(LED_DI4, 255, 165, 0, led_brightness, LEDS_PER_PIN);
+          } else {
+            led_ws_show_1pixel(LED_DI1, 255, 165, 0, led_brightness);
+            led_ws_show_1pixel(LED_DI2, 255, 165, 0, led_brightness);
+            led_ws_show_1pixel(LED_DI4, 255, 165, 0, led_brightness);
+          }
+        } else {
+          // Dark blue solid for LED 1, 2, 4 - Real data mode
+          if (LEDS_PER_PIN > 1) {
+            led_ws_show_npixels(LED_DI1, 6, 28, 47, led_brightness, LEDS_PER_PIN);
+            led_ws_show_npixels(LED_DI2, 6, 28, 47, led_brightness, LEDS_PER_PIN);
+            led_ws_show_npixels(LED_DI4, 6, 28, 47, led_brightness, LEDS_PER_PIN);
+          } else {
+            led_ws_show_1pixel(LED_DI1, 6, 28, 47, led_brightness);
+            led_ws_show_1pixel(LED_DI2, 6, 28, 47, led_brightness);
+            led_ws_show_1pixel(LED_DI4, 6, 28, 47, led_brightness);
+          }
+        }
+        // Show battery indicator on LED 3
+        led_show_battery_indicator(LED_DI3, battery_soc, battery_charging, led_brightness);
       } else {
-        // Dark blue solid - Real data mode
-        led_setAll(6, 28, 47, led_brightness);  // #061C2F - Dark blue solid
+        // Normal running mode - all LEDs same color
+        if (mock_mode) {
+          // Orange solid - Mock data mode
+          led_setAll(255, 165, 0, led_brightness);  // Orange solid
+        } else {
+          // Dark blue solid - Real data mode
+          led_setAll(6, 28, 47, led_brightness);  // #061C2F - Dark blue solid
+        }
       }
       break;
       
@@ -1268,16 +1298,23 @@ void handle_esp32_commands() {
     }
     else if (command == "BATTERY_CHARGING") {
       battery_charging = true;
-      Serial.printf("[T41] ✓ Battery charging detected (current_led_status=%d, ble_connected=%d)\n", 
-                    current_led_status, ble_connected);
-      update_led_status();  // Update LED immediately to show battery indicator
+      Serial.printf("[T41] ✓ Battery charging detected (current_led_status=%d, ble_connected=%d, current_state=%d)\n", 
+                    current_led_status, ble_connected, current_state);
+      // Force LED update - if in IDLE state, battery indicator will show
+      // If in RUNNING state, we need to temporarily allow LED update
+      if (current_led_status == LED_IDLE || current_led_status == LED_RUNNING) {
+        update_led_status();  // Update LED immediately to show battery indicator
+      }
       send_status_response("BATTERY_CHARGING", "OK");
     }
     else if (command == "BATTERY_NOT_CHARGING") {
       battery_charging = false;
-      Serial.printf("[T41] ✗ Battery not charging (current_led_status=%d, ble_connected=%d)\n", 
-                    current_led_status, ble_connected);
-      update_led_status();  // Update LED immediately to show battery indicator
+      Serial.printf("[T41] ✗ Battery not charging (current_led_status=%d, ble_connected=%d, current_state=%d)\n", 
+                    current_led_status, ble_connected, current_state);
+      // Force LED update - battery indicator should disappear
+      if (current_led_status == LED_IDLE || current_led_status == LED_RUNNING) {
+        update_led_status();  // Update LED immediately to remove battery indicator
+      }
       send_status_response("BATTERY_NOT_CHARGING", "OK");
     }
     else if (command.startsWith("BATTERY_SOC:")) {
@@ -2005,6 +2042,30 @@ void setup() {
   Serial.printf("[CAL] EEPROM load: %s\n", cal_ok ? "OK" : "DEFAULTS");
   update_led_status();  // Update LED during boot
   
+  // Auto-TARE on boot if calibration is configured
+  // This prepares the platform for immediate use
+  CalStatus boot_status;
+  cal_get_status(&boot_status);
+  bool has_calibration = (boot_status.points_ch_n[0] > 0 || boot_status.points_ch_n[1] > 0 ||
+                          boot_status.points_ch_n[2] > 0 || boot_status.points_ch_n[3] > 0);
+  if (has_calibration) {
+    Serial.println("[T41] Auto-TARE: calibration detected, running TARE...");
+    current_led_status = LED_CAL_TARE_COLLECTING;
+    update_led_status();
+    bool tare_ok = cal_tare(1500, true);  // 1.5 second tare
+    if (tare_ok) {
+      current_led_status = LED_CAL_TARE_SUCCESS;
+      led_success_start_ms = millis();
+      Serial.println("[T41] Auto-TARE complete");
+    } else {
+      Serial.println("[T41] Auto-TARE failed (continuing anyway)");
+    }
+    // Allow LED flash to complete
+    delay(600);
+    current_led_status = LED_BOOTING;  // Return to booting temporarily
+    update_led_status();
+  }
+  
   Serial.println("[T41] Ready - type HELP for commands");
   
   // Change LED status from booting to idle
@@ -2032,11 +2093,12 @@ void loop() {
   // Update LED status (every 50ms for smooth animations)
   // Skip LED updates during RUNNING state to avoid timing interference
   // (WS2812 uses noInterrupts() which blocks millis()/timing)
-  // Exception: Allow updates during RUNNING if in calibration state or ping-pong (needed for flash timing)
+  // Exceptions: Allow updates during RUNNING for calibration, ping-pong, or battery indicator
   static uint32_t last_led_update = 0;
   bool is_calibration_state = (current_led_status >= LED_CAL_TARE_COLLECTING);
   bool is_ping_pong_state = (current_led_status == LED_PING_PONG);
-  if ((current_state != STATE_RUNNING || is_calibration_state || is_ping_pong_state) && millis() - last_led_update >= 50) {
+  bool needs_battery_update = (battery_charging && !ble_connected);  // Battery indicator needs animation
+  if ((current_state != STATE_RUNNING || is_calibration_state || is_ping_pong_state || needs_battery_update) && millis() - last_led_update >= 50) {
     update_led_status();
     last_led_update = millis();
   }
