@@ -1,0 +1,236 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --accent: #0f3460;
+  --primary: #e94560;
+  --text: #eaeaea;
+  --muted: #a0a0a0;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1rem;
+  padding-bottom: 2rem;
+}
+
+header {
+  margin-bottom: 1.5rem;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.card {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.status {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.btn {
+  padding: 0.6rem 1rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn:not(:disabled):active {
+  opacity: 0.85;
+}
+
+.btn.primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn.secondary {
+  background: var(--accent);
+  color: var(--text);
+}
+
+.hint {
+  margin: 0.75rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.samples {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+}
+
+.save-load-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.save-load-row label { font-size: 0.9rem; color: var(--muted); }
+.save-load-row select {
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  min-width: 12rem;
+}
+
+/* Calibration */
+.calibration .hint {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 640px) {
+  .cal-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.cal-panel {
+  background: var(--accent);
+  border-radius: 10px;
+  padding: 1rem;
+}
+.cal-panel h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.cal-local h3 { color: #4dabf7; }
+.cal-remote h3 { color: #ffa94d; }
+.cal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+.cal-actions .btn { padding: 0.45rem 0.7rem; font-size: 0.85rem; }
+.cal-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+.cal-add-row label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.cal-input {
+  width: 4rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--surface);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+.cal-input::placeholder { color: var(--muted); }
+.cal-add-row select {
+  padding: 0.25rem 0.35rem;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.cal-out {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border-radius: 6px;
+  min-height: 3rem;
+  max-height: 140px;
+  overflow-y: auto;
+  color: var(--muted);
+}
+
+.chart-wrap {
+  position: relative;
+  height: 220px;
+  width: 100%;
+}
+
+#chart {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.results pre,
+.log-section pre {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.log-section pre {
+  max-height: 120px;
+  color: var(--muted);
+}
+
+@media (min-width: 600px) {
+  .chart-wrap {
+    height: 280px;
+  }
+}
