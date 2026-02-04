@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jump Test – Force Plate BLE</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; background: #1a1a1a; color: #e0e0e0; }
+    h1 { margin: 0 0 12px 0; font-size: 1.25rem; }
+    section { margin-bottom: 16px; }
+    .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+    button { padding: 8px 12px; cursor: pointer; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; }
+    button:hover { background: #444; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.primary { background: #0a7; }
+    button.danger { background: #c44; }
+    label { margin-right: 8px; }
+    input[type="file"] { margin-right: 8px; }
+    #log { height: 120px; overflow-y: auto; font-family: monospace; font-size: 12px; padding: 8px; background: #111; border: 1px solid #333; border-radius: 4px; white-space: pre-wrap; word-break: break-all; }
+    #chartContainer { position: relative; height: 320px; }
+    #chart { width: 100%; height: 100%; }
+    #clipOverlay { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; }
+    #clipOverlay .clip-fill { position: absolute; top: 0; bottom: 0; background: rgba(0, 120, 215, 0.15); pointer-events: none; }
+    #clipOverlay .clip-handle { position: absolute; top: 0; bottom: 0; width: 10px; cursor: ew-resize; pointer-events: auto; z-index: 2; }
+    #clipOverlay .clip-handle::after { content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 2px; background: #0a7; }
+    #clipOverlay .clip-handle.left { left: 0; }
+    #clipOverlay .clip-handle.right { right: 0; }
+    #clipOverlay .clip-handle.right::after { left: auto; right: 4px; }
+    .commands { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .commands button { font-size: 11px; padding: 6px 10px; }
+    .custom-cmd { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .custom-cmd input { flex: 1; padding: 6px; background: #222; border: 1px solid #444; color: #e0e0e0; border-radius: 4px; }
+    .status { color: #8af; margin-left: 12px; }
+    .panel { background: #252525; padding: 12px; border-radius: 6px; margin-bottom: 12px; }
+    #analysisResult { white-space: pre-wrap; font-size: 12px; max-height: 200px; overflow-y: auto; padding: 8px; background: #111; border-radius: 4px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Jump Test – Force Plate</h1>
+
+  <section class="panel">
+    <div class="bar">
+      <button id="btnConnect" class="primary">Connect</button>
+      <button id="btnDisconnect" disabled>Disconnect</button>
+      <span id="status" class="status">Disconnected</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <strong>Commands</strong>
+    <div class="commands">
+      <button id="cmdAllStart">ALL_START</button>
+      <button id="cmdAllStop">ALL_STOP</button>
+      <button id="cmdStatus">STATUS</button>
+      <button id="cmdBat">BAT</button>
+      <button id="cmdLocalTare">LOCAL_CAL_TARE</button>
+      <button id="cmdLocalShow">LOCAL_CAL_SHOW</button>
+      <button id="cmdLocalPing">LOCAL_PING</button>
+      <button id="cmdRemotePing">REMOTE_PING</button>
+    </div>
+    <div class="custom-cmd">
+      <label>Custom:</label>
+      <input type="text" id="customCmd" placeholder="e.g. ALL_LED_ON" />
+      <button id="cmdSend">Send</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="bar" style="margin-bottom: 8px;">
+      <strong>Chart (Left / Right / Total)</strong>
+      <span id="chartPauseLabel" class="status">Chart: live</span>
+      <button id="btnChartPause">Pause chart</button>
+      <button id="btnClearChart">Clear chart</button>
+    </div>
+    <div id="chartContainer">
+      <canvas id="chart"></canvas>
+      <div id="clipOverlay" style="display: none;">
+        <div class="clip-fill" id="clipFill"></div>
+        <div class="clip-handle left" id="clipHandleLeft" title="Drag to set clip start"></div>
+        <div class="clip-handle right" id="clipHandleRight" title="Drag to set clip end"></div>
+      </div>
+    </div>
+    <p style="margin: 4px 0 0 0; font-size: 12px; color: #888;">Drag the green handles on the chart to set the segment, then click Apply clip. That segment is used for CMJ.</p>
+  </section>
+
+  <section class="panel">
+    <strong>Data</strong>
+    <div class="bar" style="flex-wrap: wrap;">
+      <button id="btnSave">Save data</button>
+      <button id="btnLoad">Load data</button>
+      <button id="btnApplyClip">Apply clip</button>
+      <span id="clipRangeLabel" class="status" style="font-size: 12px;"></span>
+      <button id="btnExportCMJ">Export for CMJ</button>
+      <button id="btnRunCMJ">Run CMJ analysis</button>
+      <input type="file" id="fileLoad" accept=".json" style="display:none" />
+    </div>
+  </section>
+
+  <section class="panel">
+    <strong>CMJ result</strong>
+    <pre id="analysisResult">(no analysis yet)</pre>
+  </section>
+
+  <section>
+    <strong>Log</strong>
+    <div id="log"></div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

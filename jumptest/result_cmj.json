@@ -1,0 +1,79 @@
+{
+  "points": [
+    {
+      "point_type": "Start of Unload",
+      "time": 38.12,
+      "total_force": 748.1977352907267
+    },
+    {
+      "point_type": "Start of Yield",
+      "time": 37.792,
+      "total_force": 751.3220194814651
+    },
+    {
+      "point_type": "Braking Point",
+      "time": 37.89936788641662,
+      "total_force": 748.1977352907267
+    },
+    {
+      "point_type": "Zero Velocity Point",
+      "time": 38.160000000000004,
+      "total_force": 745.729973712658
+    },
+    {
+      "point_type": "Lifting Up",
+      "time": 38.244,
+      "total_force": 755.4623082514128
+    },
+    {
+      "point_type": "Takeoff Point",
+      "time": 38.515,
+      "total_force": 37.26949392147121
+    },
+    {
+      "point_type": "Landing Point",
+      "time": 39.646,
+      "total_force": 37.24495773936259
+    }
+  ],
+  "areas": [
+    {
+      "phase": "Yielding Phase",
+      "start_time": 37.792,
+      "end_time": 37.89936788641662
+    },
+    {
+      "phase": "Braking Phase",
+      "start_time": 37.89936788641662,
+      "end_time": 38.160000000000004
+    },
+    {
+      "phase": "Eccentric Phase",
+      "start_time": 37.792,
+      "end_time": 38.160000000000004
+    },
+    {
+      "phase": "Concentric Phase",
+      "start_time": 38.160000000000004,
+      "end_time": 38.515
+    },
+    {
+      "phase": "Flight Phase",
+      "start_time": 38.515,
+      "end_time": 39.646
+    }
+  ],
+  "analysis": {
+    "impulse": 241.55363236079592,
+    "net_impulse": -54.10287742542209,
+    "velocity": -0.7090861791990675,
+    "jump_height": 0.025627074899649948,
+    "peak_force": 1633.5735462472262,
+    "time_to_peak_force": 1.7460000000000022,
+    "rfd": 506.916410720255,
+    "eccentric_duration": -0.21999999999999886,
+    "concentric_duration": 0.615000000000002,
+    "flight_time": 1.1310000000000002,
+    "average_power": -831.8169532109838
+  }
+}
