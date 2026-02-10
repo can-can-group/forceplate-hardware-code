@@ -15,6 +15,8 @@ bool cal_init_load();
 bool cal_clear();
 
 bool cal_tare(uint32_t window_ms = 600, bool use_filtered = true);
+// Force tare: same as cal_tare but skips stability check. Use when plate is known unloaded.
+bool cal_tare_force(uint32_t window_ms = 600, bool use_filtered = true);
 
 // Add a multi-load calibration point using TOTAL load on the plate.
 // This creates a point for EACH load cell by distributing the known total load across cells
@@ -57,5 +59,10 @@ int8_t cal_get_polarity(uint8_t ch);
 // Get calibration slope for a single channel (used by streaming functions)
 // Returns the slope 'a' such that: weight_10g = delta_counts * a
 float cal_get_slope(uint8_t ch);
+
+// Display-space tare (for pre-calibrated load cells): subtract from calibrated output so displayed = 0
+int32_t cal_get_display_tare_10g(uint8_t ch);
+// reading_10g[ch] = current displayed value per channel; adds to existing display tare and saves
+bool cal_set_display_tare_from_current(const int32_t reading_10g[CHANNELS]);
 
 

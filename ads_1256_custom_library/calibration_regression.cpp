@@ -10,10 +10,27 @@ extern int32_t get_raw_filtered_reading(uint8_t channel);  // Filtered but NO ta
 // External LED update function (defined in main .ino file)
 extern void update_led_status();
 
+// ---------------- Manual polarity override (no CAL_ADD needed) ----------------
+// Per-channel polarity when wiring differs between plates. Edit this array to fix
+// channels that show negative when loaded (use -1) or positive when unloaded (use +1).
+// 0 = use auto-detected polarity from CAL_ADD; +1 or -1 = force that polarity for the channel.
+// Example: {0, 0, -1, 0} forces channel 3 (0-based) inverted; others use auto.
+static const int8_t k_polarity_override[CHANNELS] = {-1, -1, -1, -1};
+
 // ---------------- Storage ----------------
 static const uint32_t CAL_MAGIC   = 0xCA1BCA1Bu;
 static const uint16_t CAL_VERSION = 0x0004u; // v4: added polarity auto-detection
 static const int      CAL_EEPROM_ADDR = 0;
+
+// Display-space tare: separate small blob so we don't change main cal layout
+static const uint32_t DISPLAY_TARE_MAGIC = 0xD70E0D70u;  // "display tare" in hex
+static const int      DISPLAY_TARE_EEPROM_ADDR = 512;
+struct DisplayTareBlob {
+  uint32_t magic;
+  int32_t  display_tare_10g[CHANNELS];
+};
+static int32_t g_display_tare_10g[CHANNELS];
+static bool g_display_tare_loaded = false;
 
 // Keep everything fixed-size: no heap allocations.
 static const uint8_t CAL_MAX_POINTS = 10;
@@ -113,8 +130,34 @@ static bool cal_save_internal() {
   return true;
 }
 
+static void display_tare_load() {
+  if (g_display_tare_loaded) return;
+  DisplayTareBlob b;
+  EEPROM.get(DISPLAY_TARE_EEPROM_ADDR, b);
+  if (b.magic != DISPLAY_TARE_MAGIC) {
+    for (int i = 0; i < CHANNELS; i++) g_display_tare_10g[i] = 0;
+  } else {
+    for (int i = 0; i < CHANNELS; i++) g_display_tare_10g[i] = b.display_tare_10g[i];
+  }
+  g_display_tare_loaded = true;
+}
+
+static bool display_tare_save() {
+  DisplayTareBlob b;
+  b.magic = DISPLAY_TARE_MAGIC;
+  for (int i = 0; i < CHANNELS; i++) b.display_tare_10g[i] = g_display_tare_10g[i];
+  const uint8_t* src = (const uint8_t*)&b;
+  for (unsigned i = 0; i < sizeof(DisplayTareBlob); i++) {
+    EEPROM.update(DISPLAY_TARE_EEPROM_ADDR + (int)i, src[i]);
+    if ((i & 0x3F) == 0) yield();
+  }
+  return true;
+}
+
 bool cal_init_load() {
-  return cal_load_internal();
+  bool ok = cal_load_internal();
+  display_tare_load();
+  return ok;
 }
 
 bool cal_clear() {
@@ -195,10 +238,41 @@ bool cal_tare(uint32_t window_ms, bool use_filtered) {
     yield();
   }
   if (!ok) return false;
-  if (!(best < 20000.0f)) {
-    Serial.printf("[CAL] TARE rejected: unstable (sum_std=%.1f)\n", (double)best);
+  // When no calibration points exist (pre-calibrated cells), use relaxed threshold so tare can succeed
+  bool no_cal_points = true;
+  for (int ch = 0; ch < CHANNELS && no_cal_points; ch++)
+    if (g_cal.points_ch_n[ch] != 0) no_cal_points = false;
+  const float stability_limit = no_cal_points ? 100000.0f : 20000.0f;
+  if (!(best < stability_limit)) {
+    Serial.printf("[CAL] TARE rejected: unstable (sum_std=%.1f, limit=%.0f)\n", (double)best, (double)stability_limit);
     return false;
   }
+  for (int ch = 0; ch < CHANNELS; ch++) g_cal.offsets[ch] = best_s.mean[ch];
+  g_dirty = true;
+  return cal_save_internal();
+}
+
+bool cal_tare_force(uint32_t window_ms, bool use_filtered) {
+  if (!g_loaded) cal_load_internal();
+
+  const uint8_t trials = 3;
+  float best = 1e30f;
+  CaptureStats best_s = {};
+  bool ok = false;
+
+  for (uint8_t i = 0; i < trials; i++) {
+    CaptureStats s;
+    if (!capture_window(window_ms, use_filtered, &s)) continue;
+    ok = true;
+    float score = 0.0f;
+    for (int ch = 0; ch < CHANNELS; ch++) score += s.stddev[ch];
+    if (score < best) { best = score; best_s = s; }
+    delay(20);
+    yield();
+  }
+  if (!ok) return false;
+  // Skip stability check - store current mean as offset (use when plate is known unloaded)
+  Serial.printf("[CAL] TARE FORCE: storing offsets (sum_std=%.1f, stability not checked)\n", (double)best);
   for (int ch = 0; ch < CHANNELS; ch++) g_cal.offsets[ch] = best_s.mean[ch];
   g_dirty = true;
   return cal_save_internal();
@@ -439,9 +513,12 @@ void cal_get_status(CalStatus* out) {
 }
 
 // Get polarity for a single channel (used by streaming functions)
+// Uses k_polarity_override when set (non-zero); otherwise uses auto-detected polarity from CAL_ADD.
 int8_t cal_get_polarity(uint8_t ch) {
-  if (!g_loaded) cal_load_internal();
   if (ch >= CHANNELS) return 1;
+  if (k_polarity_override[ch] != 0)
+    return k_polarity_override[ch];
+  if (!g_loaded) cal_load_internal();
   return g_cal.polarity[ch];
 }
 
@@ -464,6 +541,22 @@ bool cal_get_points(uint8_t ch, CalPoint* out_points, uint8_t max_points, uint8_
   }
   *out_count = copy_n;
   return true;
+}
+
+// Display-space tare: zero the displayed value (for pre-calibrated load cells)
+int32_t cal_get_display_tare_10g(uint8_t ch) {
+  if (ch >= CHANNELS) return 0;
+  display_tare_load();
+  return g_display_tare_10g[ch];
+}
+
+// Set display tare so current displayed values become zero. reading_10g[ch] = current displayed value.
+bool cal_set_display_tare_from_current(const int32_t reading_10g[CHANNELS]) {
+  if (!reading_10g) return false;
+  display_tare_load();
+  for (int ch = 0; ch < CHANNELS; ch++)
+    g_display_tare_10g[ch] += reading_10g[ch];
+  return display_tare_save();
 }
 
 

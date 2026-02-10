@@ -112,6 +112,14 @@ struct LatestData {
 static LatestData latest_local = {0};
 static LatestData latest_remote = {0};
 
+// ESP32-side local tare: subtract from local samples so client sees zero after LOCAL_CAL_TARE.
+// capture_local_tare_countdown: when > 0, counts down each local sample. At 0, captures tare reference.
+// This skips stale pre-tare frames that may still be in the SPI buffer after the command completes.
+static int32_t local_tare_offset[4] = {0, 0, 0, 0};
+static bool local_tare_valid = false;
+static volatile int32_t capture_local_tare_countdown = -1;  // -1 = inactive
+#define TARE_FLUSH_SAMPLES 200  // Skip this many local samples to flush stale SPI buffer (~200ms at 1kHz)
+
 // SPI buffers
 static uint8_t spi_rxbuf[QUEUED_XFERS][FRAME_BYTES] __attribute__((aligned(4)));
 static spi_slave_transaction_t spi_trx[QUEUED_XFERS];
@@ -155,14 +163,15 @@ static inline bool send_uart_packet(uint8_t type, uint16_t frame_idx, uint8_t sa
 
 static inline void forward_sample_to_uart(char type, uint16_t frame_idx, uint8_t sample_idx,
                                          int32_t lc1, int32_t lc2, int32_t lc3, int32_t lc4) {
-    // Skip if UART streaming is suspended (e.g., during calibration commands)
-    if (suspend_uart_stream) return;
-    
-    // Auto-resume after 2 seconds if something went wrong
-    if (suspend_uart_since_ms > 0 && (millis() - suspend_uart_since_ms) > 2000) {
+    // Auto-resume FIRST - must run even when suspended so stream can recover
+    if (suspend_uart_stream && suspend_uart_since_ms > 0 && (millis() - suspend_uart_since_ms) > 12000) {
+        Serial.println("[RX_RADIO] UART stream auto-resume (timeout)");
         suspend_uart_stream = false;
         suspend_uart_since_ms = 0;
     }
+    
+    // Skip if UART streaming is suspended (e.g., during calibration commands)
+    if (suspend_uart_stream) return;
     
     // Send only individual sample - Redis-like system on slave handles combining
     send_uart_packet(type, frame_idx, sample_idx, lc1, lc2, lc3, lc4);
@@ -321,18 +330,41 @@ static bool sendBatteryToBleSlave() {
 
 static inline void count_sample(char type, uint16_t frame_idx, uint8_t sample_idx,
                                int32_t lc1, int32_t lc2, int32_t lc3, int32_t lc4) {
+    int32_t out_lc1 = lc1, out_lc2 = lc2, out_lc3 = lc3, out_lc4 = lc4;
+
     if (type == 'L') {
         local_samples_count++;
         if (sample_idx == 0) local_frames_count++;
         update_latest_local(frame_idx, sample_idx, lc1, lc2, lc3, lc4);
+
+        // ESP32-side local tare: skip stale buffered samples, then capture fresh sample as zero
+        if (capture_local_tare_countdown > 0) {
+            // Still flushing stale SPI buffer - count down but don't capture yet
+            capture_local_tare_countdown--;
+        } else if (capture_local_tare_countdown == 0) {
+            // Buffer flushed - this is a fresh post-tare sample, capture as zero reference
+            local_tare_offset[0] = lc1;
+            local_tare_offset[1] = lc2;
+            local_tare_offset[2] = lc3;
+            local_tare_offset[3] = lc4;
+            local_tare_valid = true;
+            capture_local_tare_countdown = -1;  // Done
+        }
+        // Subtract local tare offset from all local samples
+        if (local_tare_valid) {
+            out_lc1 -= local_tare_offset[0];
+            out_lc2 -= local_tare_offset[1];
+            out_lc3 -= local_tare_offset[2];
+            out_lc4 -= local_tare_offset[3];
+        }
     } else if (type == 'R') {
         remote_samples_count++;
         if (sample_idx == 0) remote_frames_count++;
         update_latest_remote(frame_idx, sample_idx, lc1, lc2, lc3, lc4);
     }
-    
-    // Forward sample to UART slave ESP32
-    forward_sample_to_uart(type, frame_idx, sample_idx, lc1, lc2, lc3, lc4);
+
+    // Forward sample to UART slave ESP32 (local samples tare-corrected when local_tare_valid)
+    forward_sample_to_uart(type, frame_idx, sample_idx, out_lc1, out_lc2, out_lc3, out_lc4);
 }
 
 static inline void process_frame_ultra_fast(const InnerFrame* frame, char type) {
@@ -784,8 +816,8 @@ static void process_command(String command) {
         Serial1.println(cal_command);
         Serial1.flush();
         
-        // Wait for single-line response
-        unsigned long timeout = millis() + 5000;
+        // Wait for single-line response (10s timeout: cal_tare does 3×1.5s trials)
+        unsigned long timeout = millis() + 10000;
         String response = "";
         
         while (millis() < timeout) {
@@ -800,9 +832,17 @@ static void process_command(String command) {
             delay(5);
         }
         
-        // Resume streaming
+        // ESP32-side tare: if this was a TARE command, start countdown to capture fresh sample.
+        // Skip TARE_FLUSH_SAMPLES stale buffered SPI frames before capturing the zero reference.
+        // Set BEFORE resuming stream so the SPI task starts counting immediately.
+        if (cal_command.indexOf("TARE") >= 0) {
+            capture_local_tare_countdown = TARE_FLUSH_SAMPLES;
+            Serial.printf("[RX_RADIO] TARE command - flushing %d samples before capture\n", TARE_FLUSH_SAMPLES);
+        }
+
+        // Resume streaming AFTER setting capture flag
         suspend_uart_stream = false;
-        
+
         // Forward to BLE Slave
         if (response.length() > 0) {
             Serial2.printf("##LOCAL:%s\n", response.c_str());

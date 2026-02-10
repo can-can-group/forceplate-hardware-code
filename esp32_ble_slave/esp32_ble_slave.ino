@@ -189,7 +189,7 @@ struct __attribute__((packed)) OptimizedBLEPacket {
 static OptimizedBLEPacket current_ble_packet;
 static int current_sample_count = 0;
 
-// ============================================================================
+// ============================================================================ 
 // UART PACKET PROCESSING
 // ============================================================================
 

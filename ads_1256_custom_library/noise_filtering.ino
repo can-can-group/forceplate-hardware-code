@@ -636,7 +636,9 @@ int32_t get_filtered_load_cell_reading(uint8_t channel) {
   extern int32_t mock_data_generate(uint8_t channel);
   
   if (mock_data_is_enabled()) {
-    // Return mock data directly (no filtering needed for mock data)
+    // Return mock data directly (no filtering needed for mock data).
+    // Note: When mock data is enabled, tare has no effect on streamed values (this path
+    // bypasses tare offset and polarity). Turn mock mode off when verifying tare behavior.
     return mock_data_generate(channel);
   }
   
@@ -700,6 +702,9 @@ int32_t get_calibrated_load_cell_reading(uint8_t channel) {
     weight_10g = -32768;
   }
   
+  // Display-space tare: subtract so "after tare, displayed = 0" (for pre-calibrated load cells)
+  weight_10g -= cal_get_display_tare_10g(channel);
+
   return weight_10g;
 }
 

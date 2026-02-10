@@ -1483,13 +1483,72 @@ void handle_esp32_commands() {
       current_led_status = LED_CAL_TARE_COLLECTING;
       update_led_status();  // Update LED immediately to show solid color
       bool ok = cal_tare(1500, true);  // 1.5 seconds collection time
+      CalStatus status;
+      cal_get_status(&status);
       if (ok) {
+        set_tare_offset_enabled(true);  // Ensure stream uses new offsets
+        // Zero displayed reading by setting display tare from current values (handles pre-cal scale/filter drift)
+        int32_t r[4];
+        for (int ch = 0; ch < 4; ch++) r[ch] = get_calibrated_load_cell_reading((uint8_t)ch);
+        cal_set_display_tare_from_current(r);
         current_led_status = LED_CAL_TARE_SUCCESS;
         led_success_start_ms = millis();
+        char buf[80];
+        snprintf(buf, sizeof(buf), "TARE:OK;o1=%ld;o2=%ld;o3=%ld;o4=%ld",
+                 (long)status.offsets[0], (long)status.offsets[1],
+                 (long)status.offsets[2], (long)status.offsets[3]);
+        cal_response(buf);
       } else {
         current_led_status = LED_CAL_ERROR;
+        Serial.println("[CAL] TARE:ERR (unstable - keep plate still and retry)");
+        Serial.printf("[CAL] Current offsets: LC1=%ld LC2=%ld LC3=%ld LC4=%ld\n",
+                      (long)status.offsets[0], (long)status.offsets[1],
+                      (long)status.offsets[2], (long)status.offsets[3]);
+        char buf[80];
+        snprintf(buf, sizeof(buf), "TARE:ERR;o1=%ld;o2=%ld;o3=%ld;o4=%ld",
+                 (long)status.offsets[0], (long)status.offsets[1],
+                 (long)status.offsets[2], (long)status.offsets[3]);
+        cal_response(buf);
       }
-      cal_response(ok ? "TARE:OK" : "TARE:ERR");
+    }
+    else if (command == "CAL_TARE_DISPLAY") {
+      int32_t readings[4];
+      for (int ch = 0; ch < 4; ch++) readings[ch] = get_calibrated_load_cell_reading((uint8_t)ch);
+      bool ok = cal_set_display_tare_from_current(readings);
+      if (ok) {
+        Serial.println("[CAL] TARE DISPLAY OK (display zeroed)");
+        cal_response("TARE_DISPLAY:OK");
+      } else {
+        cal_response("TARE_DISPLAY:ERR");
+      }
+    }
+    else if (command == "CAL_TARE_FORCE") {
+      Serial.println("[CAL] TARE FORCE: collecting samples (stability not checked)...");
+      current_led_status = LED_CAL_TARE_COLLECTING;
+      update_led_status();
+      bool ok = cal_tare_force(1500, true);
+      CalStatus status;
+      cal_get_status(&status);
+      if (ok) {
+        set_tare_offset_enabled(true);
+        int32_t r[4];
+        for (int ch = 0; ch < 4; ch++) r[ch] = get_calibrated_load_cell_reading((uint8_t)ch);
+        cal_set_display_tare_from_current(r);
+        current_led_status = LED_CAL_TARE_SUCCESS;
+        led_success_start_ms = millis();
+        char buf[80];
+        snprintf(buf, sizeof(buf), "TARE:OK;o1=%ld;o2=%ld;o3=%ld;o4=%ld",
+                 (long)status.offsets[0], (long)status.offsets[1],
+                 (long)status.offsets[2], (long)status.offsets[3]);
+        cal_response(buf);
+      } else {
+        current_led_status = LED_CAL_ERROR;
+        char buf[80];
+        snprintf(buf, sizeof(buf), "TARE:ERR;o1=%ld;o2=%ld;o3=%ld;o4=%ld",
+                 (long)status.offsets[0], (long)status.offsets[1],
+                 (long)status.offsets[2], (long)status.offsets[3]);
+        cal_response(buf);
+      }
     }
     else if (command.startsWith("CAL_ADD_") && !command.startsWith("CAL_ADD_CH_")) {
       // Format: CAL_ADD_<kg>
@@ -1780,13 +1839,52 @@ void handle_serial_monitor_commands() {
       current_led_status = LED_CAL_TARE_COLLECTING;
       update_led_status();  // Update LED immediately to show solid color
       bool ok = cal_tare(1500, true);  // 1.5 seconds collection time
+      CalStatus status;
+      cal_get_status(&status);
       if (ok) {
+        set_tare_offset_enabled(true);  // Ensure stream uses new offsets
+        int32_t r[4];
+        for (int ch = 0; ch < 4; ch++) r[ch] = get_calibrated_load_cell_reading((uint8_t)ch);
+        cal_set_display_tare_from_current(r);
         current_led_status = LED_CAL_TARE_SUCCESS;
         led_success_start_ms = millis();
+        Serial.println("[CAL] TARE OK");
       } else {
         current_led_status = LED_CAL_ERROR;
+        Serial.println("[CAL] TARE ERROR (unstable - keep plate still and retry)");
       }
-      Serial.println(ok ? "[CAL] TARE OK" : "[CAL] TARE ERROR");
+      Serial.printf("[CAL] Offsets: LC1=%ld LC2=%ld LC3=%ld LC4=%ld\n",
+                    (long)status.offsets[0], (long)status.offsets[1],
+                    (long)status.offsets[2], (long)status.offsets[3]);
+    }
+    else if (command == "CAL TARE FORCE" || command == "CAL_TARE_FORCE") {
+      Serial.println("[CAL] TARE FORCE: remove all load (stability not checked)...");
+      current_led_status = LED_CAL_TARE_COLLECTING;
+      update_led_status();
+      bool ok = cal_tare_force(1500, true);
+      CalStatus status;
+      cal_get_status(&status);
+      if (ok) {
+        set_tare_offset_enabled(true);
+        int32_t r[4];
+        for (int ch = 0; ch < 4; ch++) r[ch] = get_calibrated_load_cell_reading((uint8_t)ch);
+        cal_set_display_tare_from_current(r);
+        current_led_status = LED_CAL_TARE_SUCCESS;
+        led_success_start_ms = millis();
+        Serial.println("[CAL] TARE FORCE OK");
+      } else {
+        current_led_status = LED_CAL_ERROR;
+        Serial.println("[CAL] TARE FORCE ERROR");
+      }
+      Serial.printf("[CAL] Offsets: LC1=%ld LC2=%ld LC3=%ld LC4=%ld\n",
+                    (long)status.offsets[0], (long)status.offsets[1],
+                    (long)status.offsets[2], (long)status.offsets[3]);
+    }
+    else if (command == "CAL TARE DISPLAY" || command == "CAL_TARE_DISPLAY") {
+      int32_t readings[4];
+      for (int ch = 0; ch < 4; ch++) readings[ch] = get_calibrated_load_cell_reading((uint8_t)ch);
+      bool ok = cal_set_display_tare_from_current(readings);
+      Serial.println(ok ? "[CAL] TARE DISPLAY OK (display zeroed)" : "[CAL] TARE DISPLAY ERROR");
     }
     else if (command.startsWith("CAL ADD ") || command.startsWith("CAL_ADD_")) {
       // Format: CAL ADD <kg> or CAL_ADD_<kg>
