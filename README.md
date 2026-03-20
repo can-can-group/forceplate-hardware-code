@@ -1,6 +1,55 @@
-# ESP32 BLE Load Cell Server - Client Integration Guide
+# Wireless Force Plate System
 
-This document describes how to connect to the ESP32 BLE Load Cell Server, subscribe to sensor data, send commands, and receive JSON responses.
+<p align="center">
+  <img src="force-plate-cover.png" alt="Force plate system" width="800"/>
+</p>
+
+A **custom wireless force plate platform** that measures [ground reaction forces](https://en.wikipedia.org/wiki/Ground_reaction_force) from load cells, streams data from local and remote plates over ESP-NOW, and exposes a BLE interface for smartphones, tablets, and desktop clients. Built as a distributed embedded system: Teensy 4.1 + ADS1256 for high-rate acquisition and calibration, ESP32 for wireless transport and BLE access.
+
+---
+
+## What are force plates?
+
+[Force plates](https://en.wikipedia.org/wiki/Force_platform) (force platforms) measure the forces a body exerts on the ground during standing, walking, jumping, or other movement. They are used in biomechanics, sport science, and rehabilitation to assess balance, gait, strength, and power.
+
+To get a broader picture of how force plates are used in practice:
+
+- **[Force plate (Wikipedia)](https://en.wikipedia.org/wiki/Force_platform)** — definition, history, and typical applications  
+- **[Ground reaction force (Wikipedia)](https://en.wikipedia.org/wiki/Ground_reaction_force)** — the physical quantity force plates measure  
+- **[Force plate analysis in sport](https://www.scienceforsport.com/force-plates/)** — use in testing and performance
+
+---
+
+## System architecture
+
+The system has three main layers: **force measurement** (load cells + ADC + Teensy), **embedded transport** (ESP32 SPI slave, ESP-NOW, central coordinator), and **client access** (BLE to your app).
+
+<p align="center">
+  <img src="forceplate-structure.png" alt="Wireless force plate system architecture" width="700"/>
+</p>
+
+- **Force measurement:** Each plate uses four load cells, an **ADS1256** 24‑bit ADC, and a **Teensy 4.1** for sampling, filtering, and calibration at 1 kHz per channel.  
+- **Transport:** Local plate talks to the coordinator over **SPI**; remote plate over **ESP-NOW**. A central **ESP32 RX Radio** aggregates both streams and forwards to the BLE node.  
+- **Client access:** An **ESP32 BLE Slave** receives the merged stream over UART and exposes it via **BLE** (data + JSON commands) to phones, tablets, or desktop apps.
+
+---
+
+## Table of contents
+
+- [BLE Connection Details](#ble-connection-details)
+- [Quick Start](#quick-start)
+- [JSON Response Format](#json-response-format)
+- [Sensor Data Format](#sensor-data-format-binary)
+- [Available Commands](#available-commands)
+- [Load Cell Data Stream Guide](#load-cell-data-stream---complete-guide)
+- [Parsing Examples](#parsing-examples)
+- [Calibration Workflow](#calibration-workflow)
+- [Quick Reference](#quick-reference)
+- [LED Control](#led-control)
+- [Mock Data](#mock-data-generation)
+- [Battery Monitoring](#battery-monitoring)
+- [Troubleshooting](#troubleshooting)
+- [Teensy 4.1 to ADS1256 Wiring](#teensy-41-to-ads1256-wiring-diagram)
 
 ---
 
